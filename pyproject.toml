@@ -1,0 +1,93 @@
+[project]
+name = "nonebot-plugin-aidraw"
+dynamic = ["version"]
+description = "AI绘图插件 for NoneBot2，支持多种绘图API"
+authors = [
+    { name = "Agnes4m", email = "Z735803792@163.com" },
+]
+requires-python = ">=3.10,<4.0"
+keywords = ["nonebot2", "plugin", "image-generation", "ai-art", "aidraw"]
+dependencies = [
+    "nonebot2>=2.5.0",
+    "httpx>=0.25.0",
+    "pillow>=10.0.0",
+    "pydantic>=2.0.0",
+    "nonebot-plugin-alconna>=0.50.0",
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+readme = "README.md"
+license = { text = "MIT" }
+
+[project.urls]
+homepage = "https://github.com/Agnes4m/nonebot_plugin_aidraw"
+repository = "https://github.com/Agnes4m/nonebot_plugin_aidraw"
+issues = "https://github.com/Agnes4m/nonebot_plugin_aidraw/issues"
+
+[tool.pdm.build]
+includes = []
+
+[tool.pdm.version]
+source = "file"
+path = "nonebot_plugin_aidraw/__init__.py"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pyright]
+pythonVersion = "3.10"
+
+[tool.ruff.lint]
+ignore = [
+    "B008",
+    "B905",
+    "COM812",
+    "E402",
+    "E501",
+    "FBT001",
+    "FBT002",
+    "FBT003",
+    "PGH003",
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    "RUF006",
+    "RUF100",
+    "TRY002",
+    "TRY003",
+]
+select = [
+    "A",
+    "ARG",
+    "ASYNC",
+    "B",
+    "C4",
+    "COM",
+    "E",
+    "F",
+    "FBT",
+    "I",
+    "ISC",
+    "N",
+    "PIE",
+    "PGH",
+    "PTH",
+    "PYI",
+    "Q",
+    "RET",
+    "RSE",
+    "RUF",
+    "SIM",
+    "SLF",
+    "SLOT",
+    "TRY",
+]
