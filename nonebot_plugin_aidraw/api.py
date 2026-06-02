@@ -80,7 +80,11 @@ async def generate_image(prompt: str) -> Optional[str]:
 
     async with httpx.AsyncClient(timeout=config["timeout"]) as client:
         try:
-            logger.debug(f"[绘图] API请求: {config['api_url']}")
+            logger.info(
+                f"[绘图] 发起请求: url={config['api_url']}, "
+                f"model={config['model']}, prompt_len={len(prompt)}, "
+                f"size={config['default_size']}"
+            )
             response = await client.post(
                 config["api_url"],
                 json=payload,
@@ -100,6 +104,11 @@ async def generate_image(prompt: str) -> Optional[str]:
             raise ValueError(f"API返回格式异常: {data}")
 
         except httpx.HTTPStatusError as e:
+            logger.error(
+                f"[绘图] HTTP请求失败: status={e.response.status_code}, "
+                f"url={config['api_url']}, response_body={e.response.text[:500]}"
+            )
             raise ValueError(f"HTTP请求失败: {e.response.status_code}") from e
         except httpx.RequestError as e:
+            logger.error(f"[绘图] 请求异常: url={config['api_url']}, error={e}")
             raise ValueError(f"请求异常: {e}") from e
