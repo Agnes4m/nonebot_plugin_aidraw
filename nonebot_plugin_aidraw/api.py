@@ -112,7 +112,6 @@ async def generate_image(prompt: str, image_urls: list[str] | None = None) -> st
     payload = {
         "model": config["model"],
         "prompt": prompt,
-        "n": 1,
         "size": config["default_size"],
     }
 
@@ -126,9 +125,13 @@ async def generate_image(prompt: str, image_urls: list[str] | None = None) -> st
         logger.info(
             f"[绘图] 发起请求: url={config['api_url']}, "
             f"model={config['model']}, prompt_len={len(prompt)}, "
-            f"size={config['default_size']}"
+            f"size={config['default_size']}, image_count={len(image_urls) if image_urls else 0}"
         )
+        logger.debug(f"[绘图] 请求体: {payload}")
+        logger.debug(f"[绘图] 请求头: {headers}")
         response = await client.post(config["api_url"], json=payload, headers=headers)
+        logger.info(f"[绘图] 响应状态: {response.status_code}")
+        logger.debug(f"[绘图] 响应体: {response.text[:500]}")
         response.raise_for_status()
 
         data = response.json()
