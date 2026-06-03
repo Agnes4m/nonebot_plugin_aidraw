@@ -113,9 +113,9 @@ uv install nonebot-plugin-easy-aidraw
 
 ### env最简化配置
 
-draw_api_url = "http://localhost:8080"      # API 地址
+draw_api_url = ""                           # API 地址
 draw_api_key = ""                           # API 密钥
-draw_model = "gpt-image-2"                  # 模型名称
+draw_backend = "openai"                     # 后端类型
 
 ## 功能
 
@@ -148,10 +148,10 @@ draw_model = "gpt-image-2"                  # 模型名称
 ## env 设置
 
 ```bash
-draw_api_url = "http://localhost:8080"      # API 地址
+draw_api_url = ""                           # API 地址（留空则使用 draw_backend 默认地址）
 draw_api_key = ""                           # API 密钥
 draw_model = "flux"                         # 模型名称
-draw_backend = "openai"                     # 后端类型: openai/gemini/sd
+draw_backend = ""                           # 后端类型: openai/gemini/sd（必填）
 draw_default_size = "1024x1024"            # 图片尺寸
 draw_timeout = 120                          # 超时时间(秒)
 draw_nsfw_enabled = false                  # NSFW 检测（仅群聊）
@@ -161,7 +161,11 @@ draw_whitelist = []                        # 白名单
 draw_blacklist = []                         # 黑名单
 ```
 
-> `draw_api_url` 留空时使用后端默认地址；填写时作为后缀拼接到 base URL 后面
+> `draw_backend` 和 `draw_api_url` 必须设置其一
+> 后端类型对应默认地址：
+> - `openai` → `https://api.openai.com/v1/images/generations`
+> - `gemini` → `https://generativelanguage.googleapis.com/v1beta/images/generations`
+> - `sd` → `http://localhost:7860/sdapi/v1/txt2img`
 > ID 格式：`group_123456`（群组）或 `123456`（私聊）
 
 ## 其他

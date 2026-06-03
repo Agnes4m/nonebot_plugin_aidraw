@@ -48,7 +48,10 @@ async def handle_draw(event: Event, unimsg: UniMsg):
         return await UniMessage.text("❌ 图片生成失败").finish()
     logger.info(f"[绘图] 图片生成成功: {image_url}")
     try:
-        await UniMessage.image(url=image_url).send()
+        if image_url.startswith("/"):
+            await UniMessage.image(path=image_url).send()
+        else:
+            await UniMessage.image(url=image_url).send()
     except Exception as e:
         logger.error(f"[绘图] 发送失败: {e}")
         await UniMessage.text(f"❌ 发送失败，可手动访问: {image_url}").finish()

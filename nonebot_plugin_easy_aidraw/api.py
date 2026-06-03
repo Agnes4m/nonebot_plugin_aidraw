@@ -23,6 +23,25 @@ BACKEND_PATHS = {
     "sd": "/sdapi/v1/txt2img",
 }
 
+BACKEND_HEADERS = {
+    "openai": {
+        "Content-Type": "application/json",
+        "OpenAI-Organization": "",
+    },
+    "gemini": {
+        "Content-Type": "application/json",
+    },
+    "sd": {
+        "Content-Type": "application/json",
+    },
+}
+
+BACKEND_DEFAULTS = {
+    "openai": "flux",
+    "gemini": "gemini-pro",
+    "sd": "sd15",
+}
+
 
 def _get_config() -> dict:
     """延迟获取配置"""
@@ -30,18 +49,48 @@ def _get_config() -> dict:
     if _config is None:
         config_dict = dict(get_driver().config)
         api_url = config_dict.get("draw_api_url", "")
-        backend = config_dict.get("draw_backend", "openai")
-        base = BACKEND_BASES.get(backend, BACKEND_BASES["openai"])
-        path = api_url if api_url else BACKEND_PATHS.get(backend, BACKEND_PATHS["openai"])
-        full_url = base + path if not path.startswith("http") else path
+        backend = config_dict.get("draw_backend", "")
+        model = config_dict.get("draw_model", "")
+
+        if backend:
+            base = BACKEND_BASES.get(backend, "")
+            path = BACKEND_PATHS.get(backend, "")
+            if api_url:
+                full_url = api_url if api_url.startswith("http") else base.rstrip("/") + "/" + api_url.lstrip("/")
+            else:
+                full_url = base + path
+            headers = BACKEND_HEADERS.get(backend, {"Content-Type": "application/json"}).copy()
+            if headers.get("OpenAI-Organization") == "":
+                del headers["OpenAI-Organization"]
+            if not model:
+                model = BACKEND_DEFAULTS.get(backend, "flux")
+        else:
+            if not api_url:
+                raise ValueError("draw_api_url 或 draw_backend 必须设置其一")
+            full_url = api_url if api_url.startswith("http") else api_url
+            headers = {"Content-Type": "application/json"}
+            if not model:
+                model = "flux"
+
         _config = {
             "api_url": full_url,
             "api_key": config_dict.get("draw_api_key", ""),
-            "model": config_dict.get("draw_model", "flux"),
+            "model": model,
             "default_size": config_dict.get("draw_default_size", "1024x1024"),
             "timeout": config_dict.get("draw_timeout", 120),
             "nsfw_enabled": config_dict.get("draw_nsfw_enabled", False),
             "nsfw_keywords": config_dict.get("draw_nsfw_keywords", []),
+            "headers": headers,
+            "backend": backend,
+            # OpenAI 专用参数
+            "quality": config_dict.get("draw_quality"),
+            "n": config_dict.get("draw_n"),
+            "thinking": config_dict.get("draw_thinking"),
+            "response_format": config_dict.get("draw_response_format"),
+            "user": config_dict.get("draw_user"),
+            "background": config_dict.get("draw_background"),
+            "seed": config_dict.get("draw_seed"),
+            "proxy": config_dict.get("draw_proxy"),
         }
     return _config
 
@@ -104,10 +153,8 @@ async def generate_image(prompt: str, image_urls: list[str] | None = None) -> st
     if not config["api_key"]:
         raise ValueError("未配置 DRAW_API_KEY，请检查配置文件")
 
-    headers = {
-        "Authorization": f"Bearer {config['api_key']}",
-        "Content-Type": "application/json",
-    }
+    headers = config["headers"].copy()
+    headers["Authorization"] = f"Bearer {config['api_key']}"
 
     payload = {
         "model": config["model"],
@@ -115,13 +162,31 @@ async def generate_image(prompt: str, image_urls: list[str] | None = None) -> st
         "size": config["default_size"],
     }
 
+    # OpenAI 专用参数（必填）
+    if config["backend"] == "openai":
+        payload["n"] = config.get("n") or 1
+        payload["quality"] = config.get("quality") or "standard"
+        if config.get("thinking"):
+            payload["thinking"] = config["thinking"]
+        if config.get("response_format"):
+            payload["response_format"] = config["response_format"]
+        if config.get("user"):
+            payload["user"] = config["user"]
+        if config.get("background"):
+            payload["background"] = config["background"]
+        if config.get("seed") is not None:
+            payload["seed"] = config["seed"]
+
     if image_urls:
         payload["extra_body"] = {
             "image": image_urls,
-            "response_format": "url",
+            "response_format": config.get("response_format") or "url",
         }
 
-    async with httpx.AsyncClient(timeout=config["timeout"]) as client:
+    client_kwargs = {"timeout": config["timeout"]}
+    if config.get("proxy"):
+        client_kwargs["proxy"] = config["proxy"]
+    async with httpx.AsyncClient(**client_kwargs) as client:
         logger.info(
             f"[绘图] 发起请求: url={config['api_url']}, "
             f"model={config['model']}, prompt_len={len(prompt)}, "
@@ -131,15 +196,46 @@ async def generate_image(prompt: str, image_urls: list[str] | None = None) -> st
         logger.debug(f"[绘图] 请求头: {headers}")
         response = await client.post(config["api_url"], json=payload, headers=headers)
         logger.info(f"[绘图] 响应状态: {response.status_code}")
-        logger.debug(f"[绘图] 响应体: {response.text[:500]}")
         response.raise_for_status()
 
         data = response.json()
-        logger.debug(f"[绘图] API返回: {data}")
+        log_data = {k: v for k, v in data.items() if k != "data"}
+        if "data" in data:
+            d = data["data"]
+            if isinstance(d, list) and len(d) > 0:
+                first = d[0]
+                log_data["data"] = {
+                    k: (f"<{len(v)} chars>" if k == "b64_json" and isinstance(v, str) else v) for k, v in first.items()
+                }
+            elif isinstance(d, dict):
+                log_data["data"] = {
+                    k: (f"<{len(v)} chars>" if k == "b64_json" and isinstance(v, str) else v) for k, v in d.items()
+                }
+        logger.debug(f"[绘图] API返回: {log_data}")
 
-        if "data" in data and len(data["data"]) > 0:
+        img_data = None
+        if isinstance(data.get("data"), list) and len(data["data"]) > 0:
             img_data = data["data"][0]
-            if url := img_data.get("url"):
-                return url
-            raise ValueError("API未返回图片URL")
-        raise ValueError(f"API返回格式异常: {data}")
+        elif isinstance(data.get("data"), dict):
+            img_data = data["data"]
+
+        if not img_data:
+            raise ValueError(f"API返回格式异常: {data}")
+
+        if url := img_data.get("url"):
+            return url
+
+        if b64 := img_data.get("b64_json"):
+            import base64
+            from pathlib import Path
+            import uuid
+
+            img_bytes = base64.b64decode(b64)
+            cache_dir = Path("data/nonebot_plugin_easy_aidraw")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            img_path = cache_dir / f"{uuid.uuid4().hex}.png"
+            img_path.write_bytes(img_bytes)
+            logger.info(f"[绘图] 图片已保存到本地: {img_path}")
+            return str(img_path)
+
+        raise ValueError("API未返回图片URL或b64_json")
