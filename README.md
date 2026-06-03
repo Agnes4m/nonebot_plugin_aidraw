@@ -7,23 +7,23 @@
 
 <div align="center">
 
-# nonebot_plugin_aidraw 0.1.0
+# nonebot_plugin_easy_aidraw 0.1.0
 
 _✨Nonebot & AI 绘图 插件 ✨_
 
 <div align = "center">
-        <a href="https://github.com/Agnes4m/nonebot_plugin_aidraw" target="_blank">仓库</a> &nbsp; · &nbsp;
-        <a href="https://github.com/Agnes4m/nonebot_plugin_aidraw/issues" target="_blank">指令 & 反馈</a> &nbsp; · &nbsp;
-        <a href="https://github.com/Agnes4m/nonebot_plugin_aidraw/issues" target="_blank">常见问题</a>
+        <a href="https://github.com/Agnes4m/nonebot_plugin_easy_aidraw" target="_blank">仓库</a> &nbsp; · &nbsp;
+        <a href="https://github.com/Agnes4m/nonebot_plugin_easy_aidraw/issues" target="_blank">指令 & 反馈</a> &nbsp; · &nbsp;
+        <a href="https://github.com/Agnes4m/nonebot_plugin_easy_aidraw/issues" target="_blank">常见问题</a>
 </div><br>
 
 <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=edb641" alt="python">
 <a href ="LICENSE">
-<img src="https://img.shields.io/github/license/Agnes4m/nonebot_plugin_aidraw" alt="aidrawlogo">
+<img src="https://img.shields.io/github/license/Agnes4m/nonebot_plugin_easy_aidraw" alt="aidrawlogo">
 </a>
 <img src="https://img.shields.io/badge/nonebot-2.1.0+-red.svg" alt="NoneBot">
-<a href="https://pypi.python.org/pypi/nonebot-plugin-aidraw">
-<img src="https://img.shields.io/pypi/v/nonebot-plugin-aidraw?logo=python&logoColor=edb641" alt="python">
+<a href="https://pypi.python.org/pypi/nonebot-plugin-easy-aidraw">
+<img src="https://img.shields.io/pypi/v/nonebot-plugin-easy-aidraw?logo=python&logoColor=edb641" alt="python">
 </a>
 </br>
 <a href="https://github.com/astral-sh/ruff">
@@ -35,12 +35,12 @@ _✨Nonebot & AI 绘图 插件 ✨_
 
 <img src="https://img.shields.io/badge/alconna-0.50.0+-red.svg" alt="NoneBot">
 
-<a href="https://github.com/Agnes4m/nonebot_plugin_aidraw/issues">
-        <img alt="GitHub issues" src="https://img.shields.io/github/issues/Agnes4m/nonebot_plugin_aidraw" alt="issues">
+<a href="https://github.com/Agnes4m/nonebot_plugin_easy_aidraw/issues">
+        <img alt="GitHub issues" src="https://img.shields.io/github/issues/Agnes4m/nonebot_plugin_easy_aidraw" alt="issues">
 </a>
 
-<a href="https://pypi.python.org/pypi/nonebot-plugin-aidraw">
-    <img src="https://img.shields.io/pypi/dm/nonebot-plugin-aidraw" alt="pypi download">
+<a href="https://pypi.python.org/pypi/nonebot-plugin-easy-aidraw">
+    <img src="https://img.shields.io/pypi/dm/nonebot-plugin-easy-aidraw" alt="pypi download">
 </a>
 </br>
 <a href="https://jq.qq.com/?_wv=1027&k=HdjoCcAe">
@@ -60,7 +60,7 @@ _✨Nonebot & AI 绘图 插件 ✨_
 在 nonebot2 项目的根目录下打开命令行, 输入以下指令即可安装
 
 ```bash
-nb plugin install nonebot-plugin-aidraw
+nb plugin install nonebot-plugin-easy-aidraw
 ```
 
 </details>
@@ -73,7 +73,7 @@ nb plugin install nonebot-plugin-aidraw
 <summary>pip</summary>
 
 ```bash
-pip install nonebot-plugin-aidraw
+pip install nonebot-plugin-easy-aidraw
 ```
 
 </details>
@@ -81,7 +81,7 @@ pip install nonebot-plugin-aidraw
 <summary>pdm</summary>
 
 ```bash
-pdm add nonebot-plugin-aidraw
+pdm add nonebot-plugin-easy-aidraw
 ```
 
 </details>
@@ -89,7 +89,7 @@ pdm add nonebot-plugin-aidraw
 <summary>poetry</summary>
 
 ```bash
-poetry add nonebot-plugin-aidraw
+poetry add nonebot-plugin-easy-aidraw
 ```
 
 </details>
@@ -97,7 +97,7 @@ poetry add nonebot-plugin-aidraw
 <summary>conda</summary>
 
 ```bash
-conda install nonebot-plugin-aidraw
+conda install nonebot-plugin-easy-aidraw
 ```
 
 </details>
@@ -105,7 +105,7 @@ conda install nonebot-plugin-aidraw
 <summary>uv</summary>
 
 ```bash
-uv install nonebot-plugin-aidraw
+uv install nonebot-plugin-easy-aidraw
 ```
 
 </details>
@@ -169,7 +169,7 @@ draw_blacklist = []                         # 黑名单
 - 如果您有发现 BUG 或者更好的建议，欢迎提 Issue & Pr
 - 如果本插件对你有帮助，不要忘了点个 Star~
 - 本项目仅供学习使用，请勿用于商业用途
-- [MIT License](https://github.com/Agnes4m/nonebot_plugin_aidraw/blob/main/LICENSE) ©[@Agnes4m](https://github.com/Agnes4m)
+- [MIT License](https://github.com/Agnes4m/nonebot_plugin_easy_aidraw/blob/main/LICENSE) ©[@Agnes4m](https://github.com/Agnes4m)
 
 ## 🌐 感谢
 
