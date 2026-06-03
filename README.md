@@ -48,26 +48,10 @@ _✨Nonebot & AI 绘图 插件 ✨_
 </a>
 </div>
 
-## 功能
+## 快速使用
 
-- `绘图` 调用绘图 API 生成图片
 
-### 支持的绘图后端
-
-- 任意 OpenAI 兼容的 `/v1/images/generations` 接口（如 OpenAI、SiliconFlow、本地自部署等）
-- 返回 `url` 时直接转发图片链接
-- 自定义 API 地址、密钥、模型、尺寸、超时
-
-### NSFW 过滤
-
-- 群聊场景下可选启用 NSFW 关键词过滤（`DRAW_NSFW_ENABLED=true` + `DRAW_NSFW_KEYWORDS=[...]`）
-- 私聊自动跳过检测
-
-### 输出容错
-
-- 一旦拿到图片 URL，即使后续发送环节出现小问题，也不会再向用户推送错误消息，避免误扰
-
-## 安装
+### 安装
 
 以下提到的方法 任选**其一** 即可
 
@@ -117,7 +101,41 @@ conda install nonebot-plugin-aidraw
 ```
 
 </details>
+<details>
+<summary>uv</summary>
+
+```bash
+uv install nonebot-plugin-aidraw
+```
+
 </details>
+</details>
+
+### env最简化配置
+
+draw_api_url = "http://localhost:8080"      # API 地址
+draw_api_key = ""                           # API 密钥
+draw_model = "gpt-image-2"                  # 模型名称
+
+## 功能
+
+- `绘图` 调用绘图 API 生成图片
+
+### 支持的绘图后端
+
+- 任意 OpenAI 兼容的 `/v1/images/generations` 接口（如 OpenAI、Gemini、本地自部署等）
+- 返回 `url` 时直接转发图片链接
+- 自定义 API 地址、密钥、模型、尺寸、超时
+
+### NSFW 过滤
+
+- 群聊场景下可选启用 NSFW 关键词过滤（`DRAW_NSFW_ENABLED=true` + `DRAW_NSFW_KEYWORDS=[...]`）
+- 私聊自动跳过检测
+
+### 输出容错
+
+- 一旦拿到图片 URL，即使后续发送环节出现小问题，也不会再向用户推送错误消息，避免误扰
+
 
 ## 主要功能
 
@@ -125,34 +143,26 @@ conda install nonebot-plugin-aidraw
 - [x] 支持自定义 API 地址、密钥、模型
 - [x] 支持 base64 / URL 两种返回格式
 - [x] 群聊 NSFW 关键词过滤（可关闭）
+- [x] 黑白名单访问控制（支持群组/用户 ID）
 
 ## env 设置
 
 ```bash
-    draw_api_url = "http://localhost:8080/v1/images/generations"
-    """绘图 API 地址"""
-
-    draw_api_key = ""
-    """API 密钥（必填）"""
-
-    draw_model = "flux"
-    """使用的模型名称"""
-
-    draw_default_size = "1024x1024"
-    """默认图片尺寸"""
-
-    draw_timeout = 120
-    """请求超时时间(秒)"""
-
-    draw_nsfw_enabled = false
-    """是否启用 NSFW 关键词检测（仅群聊生效）"""
-
-    draw_nsfw_keywords = []
-    """NSFW 关键词列表"""
-
-    draw_trust_users = null
-    """信任用户ID列表，不为空时只有列表中的用户可以使用"""
+draw_api_url = "http://localhost:8080"      # API 地址
+draw_api_key = ""                           # API 密钥
+draw_model = "flux"                         # 模型名称
+draw_backend = "openai"                     # 后端类型: openai/gemini/sd
+draw_default_size = "1024x1024"            # 图片尺寸
+draw_timeout = 120                          # 超时时间(秒)
+draw_nsfw_enabled = false                  # NSFW 检测（仅群聊）
+draw_nsfw_keywords = []                    # NSFW 关键词
+draw_whitelist_mode = false                # 白名单模式
+draw_whitelist = []                        # 白名单
+draw_blacklist = []                         # 黑名单
 ```
+
+> `draw_api_url` 留空时使用后端默认地址；填写时作为后缀拼接到 base URL 后面
+> ID 格式：`group_123456`（群组）或 `123456`（私聊）
 
 ## 其他
 

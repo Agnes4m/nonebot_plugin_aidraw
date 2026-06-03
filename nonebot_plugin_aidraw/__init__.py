@@ -1,6 +1,6 @@
 """nonebot_plugin_aidraw - AI绘图插件"""
 
-__version__ = "0.2.0"
+__version__ = "0.1.0"
 
 from nonebot import require
 from nonebot.plugin import PluginMetadata, inherit_supported_adapters

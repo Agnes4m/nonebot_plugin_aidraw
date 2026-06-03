@@ -3,14 +3,27 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 import httpx
 from nonebot import get_driver
 from nonebot.adapters import Event
 from nonebot.log import logger
 
-_config: "Optional[dict]" = None
+_config: dict | None = None
+
+BACKEND_BASES = {
+    "openai": "https://api.openai.com",
+    "gemini": "https://generativelanguage.googleapis.com",
+    "sd": "http://localhost:7860",
+    "siliconflow": "https://api.siliconflow.cn",
+}
+
+BACKEND_PATHS = {
+    "openai": "/v1/images/generations",
+    "gemini": "/v1beta/images/generations",
+    "sd": "/sdapi/v1/txt2img",
+    "siliconflow": "/v1/images/generations",
+}
 
 
 def _get_config() -> dict:
@@ -18,10 +31,13 @@ def _get_config() -> dict:
     global _config
     if _config is None:
         config_dict = dict(get_driver().config)
+        api_url = config_dict.get("draw_api_url", "")
+        backend = config_dict.get("draw_backend", "openai")
+        base = BACKEND_BASES.get(backend, BACKEND_BASES["openai"])
+        path = api_url if api_url else BACKEND_PATHS.get(backend, BACKEND_PATHS["openai"])
+        full_url = base + path if not path.startswith("http") else path
         _config = {
-            "api_url": config_dict.get(
-                "draw_api_url", "http://localhost:8080/v1/images/generations"
-            ),
+            "api_url": full_url,
             "api_key": config_dict.get("draw_api_key", ""),
             "model": config_dict.get("draw_model", "flux"),
             "default_size": config_dict.get("draw_default_size", "1024x1024"),
@@ -38,7 +54,31 @@ def is_private_message(event: Event) -> bool:
     return not session_id.startswith(("group_", "channel_"))
 
 
-def check_nsfw(prompt: str) -> tuple[bool, Optional[str]]:
+def check_whitelist_blacklist(event: Event) -> tuple[bool, str]:
+    """检查黑白名单，返回 (是否通过, 原因)"""
+    config = _get_config()
+    session_id = event.get_session_id()
+
+    if session_id.startswith("group_"):
+        target_id = "group_" + session_id.split("_")[1]
+    else:
+        target_id = session_id.split("_", 1)[-1]
+
+    whitelist = config.get("draw_whitelist", [])
+    blacklist = config.get("draw_blacklist", [])
+    whitelist_mode = config.get("draw_whitelist_mode", False)
+
+    if whitelist_mode:
+        if target_id not in whitelist:
+            return False, "不在白名单中"
+        return True, ""
+    else:
+        if target_id in blacklist:
+            return False, "在黑名单中"
+        return True, ""
+
+
+def check_nsfw(prompt: str) -> tuple[bool, str | None]:
     """检查 prompt 是否包含 NSFW 关键词"""
     config = _get_config()
 
@@ -59,7 +99,7 @@ def check_nsfw(prompt: str) -> tuple[bool, Optional[str]]:
     return False, None
 
 
-async def generate_image(prompt: str) -> Optional[str]:
+async def generate_image(prompt: str) -> str | None:
     """调用API生成图片，返回图片URL"""
     config = _get_config()
 
@@ -79,36 +119,20 @@ async def generate_image(prompt: str) -> Optional[str]:
     }
 
     async with httpx.AsyncClient(timeout=config["timeout"]) as client:
-        try:
-            logger.info(
-                f"[绘图] 发起请求: url={config['api_url']}, "
-                f"model={config['model']}, prompt_len={len(prompt)}, "
-                f"size={config['default_size']}"
-            )
-            response = await client.post(
-                config["api_url"],
-                json=payload,
-                headers=headers,
-            )
-            response.raise_for_status()
+        logger.info(
+            f"[绘图] 发起请求: url={config['api_url']}, "
+            f"model={config['model']}, prompt_len={len(prompt)}, "
+            f"size={config['default_size']}"
+        )
+        response = await client.post(config["api_url"], json=payload, headers=headers)
+        response.raise_for_status()
 
-            data = response.json()
-            logger.debug(f"[绘图] API返回: {data}")
+        data = response.json()
+        logger.debug(f"[绘图] API返回: {data}")
 
-            if "data" in data and len(data["data"]) > 0:
-                img_data = data["data"][0]
-
-                if img_data.get("url"):
-                    return img_data["url"]
-                raise ValueError("API未返回图片URL")
-            raise ValueError(f"API返回格式异常: {data}")
-
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"[绘图] HTTP请求失败: status={e.response.status_code}, "
-                f"url={config['api_url']}, response_body={e.response.text[:500]}"
-            )
-            raise ValueError(f"HTTP请求失败: {e.response.status_code}") from e
-        except httpx.RequestError as e:
-            logger.error(f"[绘图] 请求异常: url={config['api_url']}, error={e}")
-            raise ValueError(f"请求异常: {e}") from e
+        if "data" in data and len(data["data"]) > 0:
+            img_data = data["data"][0]
+            if url := img_data.get("url"):
+                return url
+            raise ValueError("API未返回图片URL")
+        raise ValueError(f"API返回格式异常: {data}")
