@@ -10,7 +10,7 @@ dependencies = [
     "httpx>=0.25.0",
     "pillow>=10.0.0",
     "pydantic>=2.0.0",
-    "nonebot-plugin-alconna>=0.50.0",
+    "nonebot-plugin-alconna>=0.62.0",
 ]
 requires-python = ">=3.10"
 readme = "README.md"

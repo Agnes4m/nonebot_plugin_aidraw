@@ -30,7 +30,11 @@ async def handle_draw(event: Event):
             prompt = prompt[len(prefix) :].strip()
             break
 
-    logger.info(f"[绘图] 用户请求绘图: {prompt}")
+    image_urls = [
+        seg.data["url"] for seg in msg if seg.type == "image" and isinstance(seg.data, dict) and seg.data.get("url")
+    ]
+
+    logger.info(f"[绘图] 用户请求绘图: {prompt}, 附带图片: {len(image_urls)}")
 
     if not is_private_message(event):
         is_nsfw, keyword = check_nsfw(prompt)
@@ -42,7 +46,7 @@ async def handle_draw(event: Event):
         return await UniMessage.text("❌ 请提供绘图提示词\n例如: /绘图 一只可爱的小猫").finish()
     await UniMessage.text("🎨 正在生成图片，请稍候...").send()
 
-    image_url = await generate_image(prompt)
+    image_url = await generate_image(prompt, image_urls or None)
 
     if not image_url:
         return await UniMessage.text("❌ 图片生成失败").finish()

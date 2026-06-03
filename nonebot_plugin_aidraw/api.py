@@ -15,14 +15,12 @@ BACKEND_BASES = {
     "openai": "https://api.openai.com",
     "gemini": "https://generativelanguage.googleapis.com",
     "sd": "http://localhost:7860",
-    "siliconflow": "https://api.siliconflow.cn",
 }
 
 BACKEND_PATHS = {
     "openai": "/v1/images/generations",
     "gemini": "/v1beta/images/generations",
     "sd": "/sdapi/v1/txt2img",
-    "siliconflow": "/v1/images/generations",
 }
 
 
@@ -99,7 +97,7 @@ def check_nsfw(prompt: str) -> tuple[bool, str | None]:
     return False, None
 
 
-async def generate_image(prompt: str) -> str | None:
+async def generate_image(prompt: str, image_urls: list[str] | None = None) -> str | None:
     """调用API生成图片，返回图片URL"""
     config = _get_config()
 
@@ -117,6 +115,12 @@ async def generate_image(prompt: str) -> str | None:
         "n": 1,
         "size": config["default_size"],
     }
+
+    if image_urls:
+        payload["extra_body"] = {
+            "image": image_urls,
+            "response_format": "url",
+        }
 
     async with httpx.AsyncClient(timeout=config["timeout"]) as client:
         logger.info(
