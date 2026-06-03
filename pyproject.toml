@@ -1,5 +1,5 @@
 [project]
-name = "nonebot-plugin-aidraw"
+name = "nonebot-plugin-easy-aidraw"
 version = "0.1.0"
 description = "AI绘图插件 for NoneBot2，支持多种绘图API"
 authors = [
@@ -22,7 +22,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["nonebot_plugin_aidraw*"]
+include = ["nonebot_plugin_easy_aidraw*"]
 exclude = ["img*"]
 
 [tool.black]
@@ -64,7 +64,7 @@ plugin_dirs = []
 builtin_plugins = []
 
 [tool.nonebot.plugins]
-"@local" = ["nonebot_plugin_aidraw"]
+"@local" = ["nonebot_plugin_easy_aidraw"]
 
 [tool.nonebot.adapters]
 "@local" = []
