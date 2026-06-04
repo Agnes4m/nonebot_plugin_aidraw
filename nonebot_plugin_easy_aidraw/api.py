@@ -1,43 +1,27 @@
 """绘图 API 调用与配置访问"""
 
-from __future__ import annotations
-
+import base64
+from pathlib import Path
 import re
+import uuid
 
 import httpx
 from nonebot import get_driver
 from nonebot.adapters import Event
 from nonebot.log import logger
 
+from .models import ImageResponse
+
 _config: dict | None = None
 
-BACKEND_BASES = {
-    "openai": "https://api.openai.com",
-    "gemini": "https://generativelanguage.googleapis.com",
-    "sd": "http://localhost:7860",
-}
-
-BACKEND_PATHS = {
-    "openai": "/v1/images/generations",
-    "gemini": "/v1beta/images/generations",
-    "sd": "/sdapi/v1/txt2img",
-}
-
-BACKEND_HEADERS = {
-    "openai": {
-        "Content-Type": "application/json",
-        "OpenAI-Organization": "",
-    },
-    "gemini": {
-        "Content-Type": "application/json",
-    },
-    "sd": {
-        "Content-Type": "application/json",
-    },
-}
-
 BACKEND_DEFAULTS = {
-    "openai": "flux",
+    "openai": "https://api.openai.com/v1/images/generations",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/images/generations",
+    "sd": "http://localhost:7860/sdapi/v1/txt2img",
+}
+
+BACKEND_MODELS = {
+    "openai": "gpt-image-2",
     "gemini": "gemini-pro",
     "sd": "sd15",
 }
@@ -46,196 +30,168 @@ BACKEND_DEFAULTS = {
 def _get_config() -> dict:
     """延迟获取配置"""
     global _config
-    if _config is None:
-        config_dict = dict(get_driver().config)
-        api_url = config_dict.get("draw_api_url", "")
-        backend = config_dict.get("draw_backend", "")
-        model = config_dict.get("draw_model", "")
+    if _config is not None:
+        return _config
 
-        if backend:
-            base = BACKEND_BASES.get(backend, "")
-            path = BACKEND_PATHS.get(backend, "")
-            if api_url:
-                full_url = api_url if api_url.startswith("http") else base.rstrip("/") + "/" + api_url.lstrip("/")
-            else:
-                full_url = base + path
-            headers = BACKEND_HEADERS.get(backend, {"Content-Type": "application/json"}).copy()
-            if headers.get("OpenAI-Organization") == "":
-                del headers["OpenAI-Organization"]
-            if not model:
-                model = BACKEND_DEFAULTS.get(backend, "flux")
-        else:
-            if not api_url:
-                raise ValueError("draw_api_url 或 draw_backend 必须设置其一")
-            full_url = api_url if api_url.startswith("http") else api_url
-            headers = {"Content-Type": "application/json"}
-            if not model:
-                model = "flux"
+    cfg = dict(get_driver().config)
+    backend = cfg.get("draw_backend", "")
+    api_url = cfg.get("draw_api_url", "")
+    model = cfg.get("draw_model", "") or BACKEND_MODELS.get(backend, "flux")
 
-        _config = {
-            "api_url": full_url,
-            "api_key": config_dict.get("draw_api_key", ""),
-            "model": model,
-            "default_size": config_dict.get("draw_default_size", "1024x1024"),
-            "timeout": config_dict.get("draw_timeout", 120),
-            "nsfw_enabled": config_dict.get("draw_nsfw_enabled", False),
-            "nsfw_keywords": config_dict.get("draw_nsfw_keywords", []),
-            "headers": headers,
-            "backend": backend,
-            # OpenAI 专用参数
-            "quality": config_dict.get("draw_quality"),
-            "n": config_dict.get("draw_n"),
-            "thinking": config_dict.get("draw_thinking"),
-            "response_format": config_dict.get("draw_response_format"),
-            "user": config_dict.get("draw_user"),
-            "background": config_dict.get("draw_background"),
-            "seed": config_dict.get("draw_seed"),
-            "proxy": config_dict.get("draw_proxy"),
-        }
+    if backend and api_url:
+        base = BACKEND_DEFAULTS.get(backend, "").rsplit("/", 1)[0]
+        full_url = api_url if api_url.startswith("http") else f"{base}/{api_url}"
+    elif backend:
+        full_url = BACKEND_DEFAULTS.get(backend, "")
+    elif api_url:
+        full_url = api_url if api_url.startswith("http") else api_url
+    else:
+        raise ValueError("draw_api_url 或 draw_backend 必须设置其一")
+
+    headers = {"Content-Type": "application/json"}
+    if backend == "openai":
+        headers["Authorization"] = f"Bearer {cfg.get('draw_api_key', '')}"
+
+    _config = {
+        "api_url": full_url,
+        "api_key": cfg.get("draw_api_key", ""),
+        "model": model,
+        "backend": backend,
+        "default_size": cfg.get("draw_default_size", "1024x1024"),
+        "timeout": cfg.get("draw_timeout", 120),
+        "proxy": cfg.get("draw_proxy"),
+        "nsfw_enabled": cfg.get("draw_nsfw_enabled", False),
+        "nsfw_keywords": cfg.get("draw_nsfw_keywords", []),
+        "whitelist_mode": cfg.get("draw_whitelist_mode", False),
+        "whitelist": cfg.get("draw_whitelist", []),
+        "blacklist": cfg.get("draw_blacklist", []),
+        "quality": cfg.get("draw_quality"),
+        "n": cfg.get("draw_n"),
+        "response_format": cfg.get("draw_response_format"),
+        "headers": headers,
+    }
     return _config
+
+
+def _clear_config() -> None:
+    """清除缓存的配置，供测试用"""
+    global _config
+    _config = None
 
 
 def is_private_message(event: Event) -> bool:
     """判断是否为私聊消息"""
-    session_id = event.get_session_id()
-    return not session_id.startswith(("group_", "channel_"))
+    return not event.get_session_id().startswith(("group_", "channel_"))
 
 
 def check_whitelist_blacklist(event: Event) -> tuple[bool, str]:
-    """检查黑白名单，返回 (是否通过, 原因)"""
-    config = _get_config()
+    """检查黑白名单"""
+    cfg = _get_config()
     session_id = event.get_session_id()
+    target_id = (
+        f"group_{session_id.split('_', 1)[1]}" if session_id.startswith("group_") else session_id.split("_", 1)[-1]
+    )
 
-    if session_id.startswith("group_"):
-        target_id = "group_" + session_id.split("_")[1]
-    else:
-        target_id = session_id.split("_", 1)[-1]
-
-    whitelist = config.get("draw_whitelist", [])
-    blacklist = config.get("draw_blacklist", [])
-    whitelist_mode = config.get("draw_whitelist_mode", False)
-
-    if whitelist_mode:
-        if target_id not in whitelist:
-            return False, "不在白名单中"
-        return True, ""
-    else:
-        if target_id in blacklist:
-            return False, "在黑名单中"
-        return True, ""
+    if cfg["whitelist_mode"]:
+        return (target_id in cfg["whitelist"], "不在白名单中")
+    return (target_id not in cfg["blacklist"], "在黑名单中")
 
 
 def check_nsfw(prompt: str) -> tuple[bool, str | None]:
-    """检查 prompt 是否包含 NSFW 关键词"""
-    config = _get_config()
-
-    if not config.get("nsfw_enabled", False):
+    """检查 NSFW 关键词"""
+    cfg = _get_config()
+    if not cfg.get("nsfw_enabled"):
         return False, None
-
-    nsfw_keywords = config.get("nsfw_keywords", [])
-    if not nsfw_keywords:
+    keywords = cfg.get("nsfw_keywords", [])
+    if not keywords:
         return False, None
-
     words = re.findall(r"[\w\u4e00-\u9fff]+", prompt.lower())
-
-    nsfw_set = {kw.lower() for kw in nsfw_keywords}
+    nsfw_set = {kw.lower() for kw in keywords}
     for word in words:
         if word in nsfw_set:
             return True, word
-
     return False, None
 
 
-async def generate_image(prompt: str, image_urls: list[str] | None = None) -> str | None:
-    """调用API生成图片，返回图片URL"""
-    config = _get_config()
+def _truncate(val: str, length: int = 100) -> str:
+    return val[:length] + "..." if len(val) > length else val
 
-    if not config["api_key"]:
-        raise ValueError("未配置 DRAW_API_KEY，请检查配置文件")
 
-    headers = config["headers"].copy()
-    headers["Authorization"] = f"Bearer {config['api_key']}"
+def _log_payload(payload: dict) -> None:
+    def _sanitize(v: str) -> str:
+        if len(v) > 100:
+            return _truncate(v, 100)
+        return v
 
-    payload = {
-        "model": config["model"],
+    log: dict = {}
+    for k, v in payload.items():
+        if k == "extra_body":
+            log[k] = {kk: _sanitize(str(vv)) for kk, vv in v.items()} if isinstance(v, dict) else v
+        else:
+            log[k] = _sanitize(v) if isinstance(v, str) else v
+    logger.debug(f"[绘图] 请求体: {log}")
+
+
+async def generate_image(prompt: str, image_urls: list[str] | None = None) -> str | Path:
+    """调用 API 生成图片，返回 URL 或本地路径"""
+    cfg = _get_config()
+
+    if not cfg["api_key"]:
+        raise ValueError("未配置 DRAW_API_KEY")
+
+    payload: dict = {
+        "model": cfg["model"],
         "prompt": prompt,
-        "size": config["default_size"],
+        "size": cfg["default_size"],
     }
 
-    # OpenAI 专用参数（必填）
-    if config["backend"] == "openai":
-        payload["n"] = config.get("n") or 1
-        payload["quality"] = config.get("quality") or "standard"
-        if config.get("thinking"):
-            payload["thinking"] = config["thinking"]
-        if config.get("response_format"):
-            payload["response_format"] = config["response_format"]
-        if config.get("user"):
-            payload["user"] = config["user"]
-        if config.get("background"):
-            payload["background"] = config["background"]
-        if config.get("seed") is not None:
-            payload["seed"] = config["seed"]
+    if cfg["backend"] == "openai":
+        payload["n"] = cfg.get("n") or 1
+        payload["quality"] = cfg.get("quality") or "standard"
+        if fmt := cfg.get("response_format"):
+            payload["response_format"] = fmt
 
     if image_urls:
-        payload["extra_body"] = {
-            "image": image_urls,
-            "response_format": config.get("response_format") or "url",
-        }
+        payload["extra_body"] = {"image": image_urls}
 
-    client_kwargs = {"timeout": config["timeout"]}
-    if config.get("proxy"):
-        client_kwargs["proxy"] = config["proxy"]
+    client_kwargs: dict = {"timeout": cfg["timeout"]}
+    if cfg.get("proxy"):
+        client_kwargs["proxy"] = cfg["proxy"]
+
+    _log_payload(payload)
+
     async with httpx.AsyncClient(**client_kwargs) as client:
-        logger.info(
-            f"[绘图] 发起请求: url={config['api_url']}, "
-            f"model={config['model']}, prompt_len={len(prompt)}, "
-            f"size={config['default_size']}, image_count={len(image_urls) if image_urls else 0}"
-        )
-        logger.debug(f"[绘图] 请求体: {payload}")
-        logger.debug(f"[绘图] 请求头: {headers}")
-        response = await client.post(config["api_url"], json=payload, headers=headers)
-        logger.info(f"[绘图] 响应状态: {response.status_code}")
+        logger.info(f"[绘图] 请求: model={cfg['model']}, prompt_len={len(prompt)}")
+        response = await client.post(cfg["api_url"], json=payload, headers=cfg["headers"])
         response.raise_for_status()
 
-        data = response.json()
-        log_data = {k: v for k, v in data.items() if k != "data"}
-        if "data" in data:
-            d = data["data"]
-            if isinstance(d, list) and len(d) > 0:
-                first = d[0]
-                log_data["data"] = {
-                    k: (f"<{len(v)} chars>" if k == "b64_json" and isinstance(v, str) else v) for k, v in first.items()
-                }
-            elif isinstance(d, dict):
-                log_data["data"] = {
-                    k: (f"<{len(v)} chars>" if k == "b64_json" and isinstance(v, str) else v) for k, v in d.items()
-                }
-        logger.debug(f"[绘图] API返回: {log_data}")
+        resp = ImageResponse.model_validate(response.json())
 
-        img_data = None
-        if isinstance(data.get("data"), list) and len(data["data"]) > 0:
-            img_data = data["data"][0]
-        elif isinstance(data.get("data"), dict):
-            img_data = data["data"]
+        def _sanitize_json(obj):
+            if isinstance(obj, str):
+                return _truncate(obj, 100)
+            if isinstance(obj, dict):
+                return {k: _sanitize_json(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_sanitize_json(item) for item in obj]
+            return obj
 
-        if not img_data:
-            raise ValueError(f"API返回格式异常: {data}")
+        logger.debug(f"[绘图] 响应: {_sanitize_json(resp.model_dump())}")
 
-        if url := img_data.get("url"):
-            return url
+        if not resp.data:
+            raise ValueError(f"API 返回格式异常: {resp}")
 
-        if b64 := img_data.get("b64_json"):
-            import base64
-            from pathlib import Path
-            import uuid
+        img_data = resp.data[0]
 
-            img_bytes = base64.b64decode(b64)
+        if img_data.url:
+            return img_data.url
+
+        if img_data.b64_json:
             cache_dir = Path("data/nonebot_plugin_easy_aidraw")
             cache_dir.mkdir(parents=True, exist_ok=True)
             img_path = cache_dir / f"{uuid.uuid4().hex}.png"
-            img_path.write_bytes(img_bytes)
-            logger.info(f"[绘图] 图片已保存到本地: {img_path}")
-            return str(img_path)
+            img_path.write_bytes(base64.b64decode(img_data.b64_json))
+            logger.info(f"[绘图] 已保存本地: {img_path}")
+            return img_path
 
-        raise ValueError("API未返回图片URL或b64_json")
+        raise ValueError("API 未返回图片 URL 或 b64_json")
