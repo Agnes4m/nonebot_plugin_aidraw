@@ -61,6 +61,7 @@ draw_proxy = ""                         # HTTP 代理，如 http://127.0.0.1:108
 ### 可选功能
 
 ```bash
+draw_user_cooldown = 30                # 单用户冷却时间（分钟），0 禁用
 draw_nsfw_enabled = true               # 启用 NSFW 关键词过滤（仅群聊）
 draw_nsfw_keywords = ["敏感词1", "敏感词2"]
 draw_whitelist_mode = true             # 白名单模式
@@ -74,10 +75,12 @@ draw_response_format = "url"            # 返回格式 url / b64_json
 ## 功能
 
 - 支持 OpenAI / Gemini / Stable Diffusion 多种后端
+- **请求队列**：单用户串行处理，前方有 N 个请求时显示排队位置
+- **用户冷却**：单用户 N 分钟内只能请求一次（可配置，超级用户无视）
 - 回复消息中的图片作为垫图
 - NSFW 关键词过滤（仅群聊）
 - 黑白名单访问控制
-- b64_json 本地文件通过 base64:// 发送
+- URL / base64 两种返回格式（OneBot V11 走 base64:// 发送）
 
 ## 协议
 

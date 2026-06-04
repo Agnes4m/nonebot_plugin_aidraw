@@ -68,6 +68,7 @@ def _get_config() -> dict:
         "quality": cfg.get("draw_quality"),
         "n": cfg.get("draw_n"),
         "response_format": cfg.get("draw_response_format"),
+        "user_cooldown": cfg.get("draw_user_cooldown", 30),
         "headers": headers,
     }
     return _config

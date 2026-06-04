@@ -19,6 +19,7 @@ class EnvConfig(BaseModel):
     draw_quality: str | None = None
     draw_n: int | None = None
     draw_response_format: str | None = None
+    draw_user_cooldown: int = 30
 
     class Config:
         populate_by_name = True
