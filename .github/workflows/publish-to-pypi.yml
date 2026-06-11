@@ -1,24 +1,26 @@
-name: Publish to PyPI
+name: Publish Python 🐍 distributions 📦 to PyPI
 
 on:
   release:
     types: [published]
   workflow_dispatch:
-
 jobs:
-  publish:
+  build-n-publish:
+    name: Use PDM to Build and publish Python 🐍 distributions 📦 to PyPI
     runs-on: ubuntu-latest
+
+    permissions:
+      # IMPORTANT: this permission is mandatory for trusted publishing
+      id-token: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@master
+        with:
+          submodules: true
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - name: Setup PDM
+        uses: pdm-project/setup-pdm@v3
 
-      - name: Set up Python
-        run: uv python install 3.14
-
-      - name: Build package
-        run: uv build
-
-      - name: Publish to PyPI
-        run: uv publish --trusted-publishing
+      - name: Build and Publish distribution 📦 to PyPI
+        run: pdm publish
