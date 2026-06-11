@@ -51,6 +51,8 @@ draw_proxy = ""                        # HTTP 代理，如 http://127.0.0.1:1080
 > - `openai` → `https://api.openai.com/v1/images/generations`
 > - `gemini` → `https://generativelanguage.googleapis.com/v1beta/images/generations`
 > - `sd` → `http://localhost:7860/sdapi/v1/txt2img`
+>
+> 自定义 `draw_api_url` 时请以 `/v1` 结尾，例如 `https://apihub.agnes-ai.com/v1`（插件会自动拼接 `/images/generations`）。若填写了 `/v1/images/generations` 也会被自动截断为 base URL。
 
 ### 使用
 

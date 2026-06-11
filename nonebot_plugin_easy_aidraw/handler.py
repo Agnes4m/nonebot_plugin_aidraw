@@ -54,11 +54,12 @@ async def _send_image(result: str | Path) -> None:
     try:
         await UniMessage.image(url=result).send()
     except Exception as e:
-        logger.warning(f"[绘图] URL 发送失败，回退下载: {e}")
+        logger.warning(f"[绘图] URL 发送失败，回退下载转 base64: {e}")
         async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
             resp = await client.get(result)
             resp.raise_for_status()
-        await UniMessage.image(url=_to_data_uri(resp.content)).send()
+            data = resp.content
+        await UniMessage.image(url=_to_data_uri(data)).send()
 
 
 def _check_cooldown(user_id: str, cooldown_sec: int) -> tuple[bool, int]:
@@ -163,7 +164,7 @@ async def handle_draw(event: Event, arp: Arparma, unimsg: UniMsg):
 
     try:
         await _send_image(result)
-        if usage_info is not None:
+        if usage_info and any(v for v in (usage_info.input_tokens, usage_info.output_tokens, usage_info.total_tokens)):
             await UniMessage.text(f"📊 本次消耗: {usage_info.format()}").send()
     except Exception as e:
         logger.exception(f"[绘图] 发送失败: {e}")

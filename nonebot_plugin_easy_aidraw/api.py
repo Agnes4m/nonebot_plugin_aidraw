@@ -56,7 +56,12 @@ def _get_config() -> dict:
     if api_url:
         if not api_url.startswith(("http://", "https://")):
             raise ValueError("draw_api_url 必须以 http:// 或 https:// 开头")
-        full_url = api_url
+        api_url = api_url.rstrip("/")
+        if api_url.endswith("/images/generations"):
+            api_url = api_url[: -len("/images/generations")]
+        if not api_url.endswith("/v1"):
+            raise ValueError("draw_api_url 必须以 /v1 结尾（如 https://apihub.agnes-ai.com/v1）")
+        full_url = f"{api_url}/images/generations"
     elif backend in BACKEND_DEFAULTS:
         full_url, default_model = BACKEND_DEFAULTS[backend]
     else:
@@ -190,6 +195,15 @@ async def generate_image(
             raise RuntimeError(f"API 返回 {e.response.status_code}: {err_body}") from e
 
         resp = ImageResponse.model_validate(response.json())
+
+        def _sanitize(obj):
+            if isinstance(obj, dict):
+                return {k: ("<bytes>" if k in ("b64_json",) else _sanitize(v)) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_sanitize(i) for i in obj]
+            return obj
+
+        logger.info(f"[绘图] 响应: {_sanitize(resp.model_dump(exclude_none=True))}")
 
         if not resp.data:
             safe = resp.model_dump(exclude={"usage"}, exclude_none=True)
