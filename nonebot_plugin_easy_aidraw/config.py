@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 class EnvConfig(BaseModel):
     draw_api_url: str = ""
+    draw_api_url_edits: str = ""
     draw_api_key: str = ""
     draw_model: str = ""
     draw_backend: str = ""

@@ -18,9 +18,24 @@ from .models import ImageResponse
 _config: dict | None = None
 
 BACKEND_DEFAULTS = {
-    "openai": ("https://api.openai.com/v1/images/generations", "gpt-image-2"),
-    "gemini": ("https://generativelanguage.googleapis.com/v1beta/images/generations", "gemini-pro"),
-    "sd": ("http://localhost:7860/sdapi/v1/txt2img", "sd15"),
+    "openai": {
+        "base": "https://api.openai.com/v1",
+        "txt2img": "/images/generations",
+        "img2img": "/images/edits",
+        "default_model": "gpt-image-2",
+    },
+    "gemini": {
+        "base": "https://generativelanguage.googleapis.com/v1beta",
+        "txt2img": "/images/generations",
+        "img2img": "/images/edits",
+        "default_model": "gemini-pro",
+    },
+    "sd": {
+        "base": "http://localhost:7860/sdapi/v1",
+        "txt2img": "/txt2img",
+        "img2img": "/img2img",
+        "default_model": "sd15",
+    },
 }
 
 KEY_NEEDED_BACKENDS = {"openai", "gemini"}
@@ -44,6 +59,14 @@ class UsageInfo:
         return ", ".join(parts)
 
 
+def _normalize_base(url: str) -> str:
+    url = url.rstrip("/")
+    for suffix in ("/images/generations", "/images/edits"):
+        if url.endswith(suffix):
+            return url[: -len(suffix)]
+    return url
+
+
 def _get_config() -> dict:
     global _config
     if _config is not None:
@@ -51,23 +74,36 @@ def _get_config() -> dict:
 
     cfg = dict(get_driver().config)
     backend = cfg.get("draw_backend", "")
-    api_url = cfg.get("draw_api_url", "")
 
-    if api_url:
-        if not api_url.startswith(("http://", "https://")):
+    api_url_raw = cfg.get("draw_api_url", "")
+    api_url_edits_raw = cfg.get("draw_api_url_edits", "")
+
+    if api_url_raw:
+        if not api_url_raw.startswith(("http://", "https://")):
             raise ValueError("draw_api_url 必须以 http:// 或 https:// 开头")
-        api_url = api_url.rstrip("/")
-        if api_url.endswith("/images/generations"):
-            api_url = api_url[: -len("/images/generations")]
-        if not api_url.endswith("/v1"):
+        api_url_raw = api_url_raw.rstrip("/")
+        api_url_raw = _normalize_base(api_url_raw)
+        if not api_url_raw.endswith("/v1"):
             raise ValueError("draw_api_url 必须以 /v1 结尾（如 https://apihub.agnes-ai.com/v1）")
-        full_url = f"{api_url}/images/generations"
+        full_url = f"{api_url_raw}/images/generations"
     elif backend in BACKEND_DEFAULTS:
-        full_url, default_model = BACKEND_DEFAULTS[backend]
+        full_url = BACKEND_DEFAULTS[backend]["base"] + BACKEND_DEFAULTS[backend]["txt2img"]
     else:
         raise ValueError("draw_api_url 或 draw_backend 必须设置其一")
 
-    model = cfg.get("draw_model") or BACKEND_DEFAULTS.get(backend, ("", "flux"))[1]
+    if api_url_edits_raw:
+        if not api_url_edits_raw.startswith(("http://", "https://")):
+            raise ValueError("draw_api_url_edits 必须以 http:// 或 https:// 开头")
+        edits_url = _normalize_base(api_url_edits_raw)
+        if not edits_url.endswith("/v1"):
+            raise ValueError("draw_api_url_edits 必须以 /v1 结尾")
+        edits_full = f"{edits_url}/images/edits"
+    elif backend in BACKEND_DEFAULTS:
+        edits_full = BACKEND_DEFAULTS[backend]["base"] + BACKEND_DEFAULTS[backend]["img2img"]
+    else:
+        edits_full = full_url.replace("/images/generations", "/images/edits")
+
+    model = cfg.get("draw_model") or BACKEND_DEFAULTS.get(backend, {}).get("default_model", "flux")
 
     headers = {"Content-Type": "application/json"}
     api_key = cfg.get("draw_api_key", "")
@@ -76,6 +112,7 @@ def _get_config() -> dict:
 
     _config = {
         "api_url": full_url,
+        "api_url_edits": edits_full,
         "api_key": api_key,
         "model": model,
         "backend": backend,
@@ -146,96 +183,152 @@ def _save_b64_to_cache(b64: str) -> Path:
     return img_path
 
 
-async def generate_image(
-    prompt: str, image_urls: list[str] | None = None
-) -> tuple[str | Path | None, UsageInfo | None]:
+async def _download_to_bytes(url: str) -> bytes:
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.content
+
+
+def _b64_to_result(b64: str) -> Path:
     cfg = _get_config()
+    if cfg["cache_enabled"]:
+        return _save_b64_to_cache(b64)
+    cache_path = Path(cfg["cache_dir"]) / f".tmp-{uuid.uuid4().hex}.png"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(base64.b64decode(b64))
+    return cache_path
 
-    if cfg["backend"] in KEY_NEEDED_BACKENDS and not cfg["api_key"]:
-        raise ValueError("未配置 DRAW_API_KEY")
 
+def _extract_image_data(resp: ImageResponse) -> str | Path:
+    if not resp.data:
+        safe = resp.model_dump(exclude={"usage"}, exclude_none=True)
+        raise ValueError(f"API 返回格式异常: {safe}")
+    img_data = resp.data[0]
+    if img_data.b64_json:
+        return _b64_to_result(img_data.b64_json)
+    if img_data.url:
+        return img_data.url
+    raise ValueError("API 未返回图片 URL 或 b64_json")
+
+
+def _build_usage_info(resp: ImageResponse, cfg: dict) -> UsageInfo:
+    if resp.usage or resp.model:
+        return UsageInfo(
+            model=resp.model or cfg["model"],
+            input_tokens=resp.usage.input_tokens if resp.usage else None,
+            output_tokens=resp.usage.output_tokens if resp.usage else None,
+            total_tokens=resp.usage.total_tokens if resp.usage else None,
+        )
+    return UsageInfo(model=cfg["model"])
+
+
+def _sanitize_for_log(obj):
+    if isinstance(obj, dict):
+        return {k: ("<bytes>" if k in ("b64_json",) else _sanitize_for_log(v)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_log(i) for i in obj]
+    return obj
+
+
+def _format_error(status: int, body: str) -> str:
+    if not body:
+        return f"API 返回 {status}"
+    return f"API 返回 {status}: {body}"
+
+
+async def _post_with_retry(client: httpx.AsyncClient, *, url: str, headers: dict, **kwargs) -> ImageResponse:
+    try:
+        response = await client.post(url, headers=headers, **kwargs)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        body = e.response.text or ""
+        try:
+            err = e.response.json().get("error", {})
+            code = err.get("code", "")
+            msg = err.get("message", body)
+            if code and msg:
+                body = f"[{code}] {msg}"
+            elif msg:
+                body = msg
+        except Exception:
+            pass
+        raise RuntimeError(_format_error(e.response.status_code, body.strip())) from e
+
+    resp = ImageResponse.model_validate(response.json())
+    logger.info(f"[绘图] 响应: {_sanitize_for_log(resp.model_dump(exclude_none=True))}")
+    return resp
+
+
+def _build_json_payload(cfg: dict, prompt: str) -> dict:
     payload: dict = {
         "model": cfg["model"],
         "prompt": prompt,
         "size": cfg["default_size"],
     }
-
     if cfg["backend"] == "openai":
         payload["n"] = cfg.get("n") or 1
         payload["quality"] = cfg.get("quality") or "standard"
         if fmt := cfg.get("response_format"):
             payload["response_format"] = fmt
+    return payload
 
-    if image_urls:
-        payload["extra_body"] = {"image": image_urls}
+
+async def _post_json(client: httpx.AsyncClient, url: str, payload: dict, headers: dict) -> ImageResponse:
+    logger.debug(f"[绘图] 请求体: {payload}")
+    logger.debug(f"[绘图] headers: {_safe_headers(headers)}")
+    return await _post_with_retry(client, url=url, headers=headers, json=payload)
+
+
+async def generate_image(prompt: str) -> tuple[str | Path, UsageInfo]:
+    cfg = _get_config()
+    if cfg["backend"] in KEY_NEEDED_BACKENDS and not cfg["api_key"]:
+        raise ValueError("未配置 DRAW_API_KEY")
+
+    payload = _build_json_payload(cfg, prompt)
+    client_kwargs: dict = {"timeout": cfg["timeout"]}
+    if cfg.get("proxy"):
+        client_kwargs["proxy"] = cfg["proxy"]
+
+    async with httpx.AsyncClient(**client_kwargs) as client:
+        logger.info(f"[绘图] 请求: model={cfg['model']}, prompt_len={len(prompt)}, mode=txt2img")
+        resp = await _post_json(client, cfg["api_url"], payload, cfg["headers"])
+        result = _extract_image_data(resp)
+        usage_info = _build_usage_info(resp, cfg)
+        logger.info(f"[绘图] 生成成功: {result}")
+        return result, usage_info
+
+
+async def edit_image(prompt: str, image_url: str) -> tuple[str | Path, UsageInfo]:
+    cfg = _get_config()
+    if cfg["backend"] in KEY_NEEDED_BACKENDS and not cfg["api_key"]:
+        raise ValueError("未配置 DRAW_API_KEY")
+
+    logger.info(f"[绘图] 准备垫图: {image_url}")
+    image_bytes = await _download_to_bytes(image_url)
 
     client_kwargs: dict = {"timeout": cfg["timeout"]}
     if cfg.get("proxy"):
         client_kwargs["proxy"] = cfg["proxy"]
 
-    logger.debug(f"[绘图] 请求体: {payload}")
-    logger.debug(f"[绘图] prompt: {prompt}")
-    logger.debug(f"[绘图] image_urls: {image_urls}")
-    logger.debug(f"[绘图] headers: {_safe_headers(cfg['headers'])}")
+    form_data: dict = {
+        "model": cfg["model"],
+        "prompt": prompt,
+        "n": str(cfg.get("n") or 1),
+    }
+    if cfg["backend"] == "openai":
+        form_data["quality"] = cfg.get("quality") or "standard"
+    if fmt := cfg.get("response_format"):
+        form_data["response_format"] = fmt
+
+    files = {"image": ("image.png", image_bytes, "image/png")}
+    headers = {"Authorization": cfg["headers"]["Authorization"]} if cfg["headers"].get("Authorization") else {}
 
     async with httpx.AsyncClient(**client_kwargs) as client:
-        logger.info(f"[绘图] 请求: model={cfg['model']}, prompt_len={len(prompt)}")
-        try:
-            response = await client.post(cfg["api_url"], json=payload, headers=cfg["headers"])
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            err_body = ""
-            try:
-                err = e.response.json().get("error", {})
-                code = err.get("code", "")
-                msg = err.get("message", e.response.text)
-                err_body = f"[{code}] {msg}" if code else msg
-            except Exception:
-                err_body = e.response.text
-            raise RuntimeError(f"API 返回 {e.response.status_code}: {err_body}") from e
-
-        resp = ImageResponse.model_validate(response.json())
-
-        def _sanitize(obj):
-            if isinstance(obj, dict):
-                return {k: ("<bytes>" if k in ("b64_json",) else _sanitize(v)) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [_sanitize(i) for i in obj]
-            return obj
-
-        logger.info(f"[绘图] 响应: {_sanitize(resp.model_dump(exclude_none=True))}")
-
-        if not resp.data:
-            safe = resp.model_dump(exclude={"usage"}, exclude_none=True)
-            raise ValueError(f"API 返回格式异常: {safe}")
-
-        img_data = resp.data[0]
-        result: str | Path | None = None
-
-        if img_data.b64_json:
-            if cfg["cache_enabled"]:
-                result = _save_b64_to_cache(img_data.b64_json)
-            else:
-                cache_path = Path(cfg["cache_dir"]) / f".tmp-{uuid.uuid4().hex}.png"
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_bytes(base64.b64decode(img_data.b64_json))
-                result = cache_path
-        elif img_data.url:
-            result = img_data.url
-        else:
-            raise ValueError("API 未返回图片 URL 或 b64_json")
-
-        usage_info: UsageInfo | None = None
-        if resp.usage or resp.model:
-            usage_info = UsageInfo(
-                model=resp.model or cfg["model"],
-                input_tokens=resp.usage.input_tokens if resp.usage else None,
-                output_tokens=resp.usage.output_tokens if resp.usage else None,
-                total_tokens=resp.usage.total_tokens if resp.usage else None,
-            )
-        else:
-            usage_info = UsageInfo(model=cfg["model"])
-
+        logger.info(f"[绘图] 请求: model={cfg['model']}, prompt_len={len(prompt)}, mode=img2img")
+        resp = await _post_with_retry(client, url=cfg["api_url_edits"], headers=headers, data=form_data, files=files)
+        result = _extract_image_data(resp)
+        usage_info = _build_usage_info(resp, cfg)
         logger.info(f"[绘图] 生成成功: {result}")
         return result, usage_info
 

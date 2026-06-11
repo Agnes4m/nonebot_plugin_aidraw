@@ -13,12 +13,21 @@ from nonebot.log import logger
 from nonebot.permission import SUPERUSER
 from nonebot_plugin_alconna import Image, UniMessage, UniMsg, on_alconna
 
-from .api import _get_config, check_nsfw, check_whitelist_blacklist, cleanup_cache, generate_image, is_private_message
+from .api import (
+    _get_config,
+    check_nsfw,
+    check_whitelist_blacklist,
+    cleanup_cache,
+    edit_image,
+    generate_image,
+    is_private_message,
+)
 
 _DOWNLOAD_TIMEOUT = 60
 
 draw_alc = Alconna(
     "绘图",
+    Args["prompt", str],
     Option("--model", Args["model", str], help_text="指定模型"),
     Option("--size", Args["size", str], help_text="指定图片尺寸，如 1024x1024"),
     Option("--n", Args["n", int], help_text="生成数量"),
@@ -79,7 +88,9 @@ async def handle_draw(event: Event, arp: Arparma, unimsg: UniMsg):
     if not (passed := check_whitelist_blacklist(event))[0]:
         return await UniMessage.text(f"❌ 访问被拒绝：{passed[1]}").finish()
 
-    prompt = unimsg.extract_plain_text().strip()
+    prompt = (arp.main_args.get("prompt", "") if hasattr(arp, "main_args") else "").strip()
+    if not prompt:
+        prompt = unimsg.extract_plain_text().strip()
 
     cfg = _get_config()
     user_id = event.get_user_id()
@@ -134,13 +145,17 @@ async def handle_draw(event: Event, arp: Arparma, unimsg: UniMsg):
     try:
         async with _draw_lock:
             _user_last_request[user_id] = time.time()
-            image_urls: list[str] = []
+            image_url: str | None = None
             if event.reply:
                 for seg in event.reply.message:
                     if seg.type == "image" and seg.data.get("url"):
-                        image_urls.append(seg.data["url"])
-            image_urls.extend(img.data["url"] for img in unimsg[Image] if img.data.get("url"))
-            logger.info(f"[绘图] 请求: prompt={prompt!r}, model={used_model}, size={used_size}, 图片={len(image_urls)}")
+                        image_url = seg.data["url"]
+                        break
+            if image_url is None:
+                for img in unimsg[Image]:
+                    if img.data.get("url"):
+                        image_url = img.data["url"]
+                        break
 
             from .api import _get_config as _g
 
@@ -152,7 +167,12 @@ async def handle_draw(event: Event, arp: Arparma, unimsg: UniMsg):
             if model_override:
                 c["model"] = model_override
 
-            result, usage_info = await generate_image(prompt, image_urls or None)
+            if image_url:
+                logger.info(f"[绘图] 请求: prompt={prompt!r}, model={used_model}, size={used_size}, mode=img2img")
+                result, usage_info = await edit_image(prompt, image_url)
+            else:
+                logger.info(f"[绘图] 请求: prompt={prompt!r}, model={used_model}, size={used_size}, mode=txt2img")
+                result, usage_info = await generate_image(prompt)
     except Exception as e:
         logger.exception(f"[绘图] 生成失败: {e}")
         error_msg = str(e)
