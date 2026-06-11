@@ -67,6 +67,19 @@ def _normalize_base(url: str) -> str:
     return url
 
 
+def _resolve_endpoint(raw_url: str, backend: str, suffix: str) -> str:
+    if raw_url:
+        if not raw_url.startswith(("http://", "https://")):
+            raise ValueError("draw_api_url 必须以 http:// 或 https:// 开头")
+        base = _normalize_base(raw_url.rstrip("/"))
+        if not base.endswith("/v1"):
+            raise ValueError("draw_api_url 必须以 /v1 结尾")
+        return f"{base}{suffix}"
+    if backend in BACKEND_DEFAULTS:
+        return BACKEND_DEFAULTS[backend]["base"] + suffix
+    raise ValueError("draw_api_url 或 draw_backend 必须设置其一")
+
+
 def _get_config() -> dict:
     global _config
     if _config is not None:
@@ -74,39 +87,20 @@ def _get_config() -> dict:
 
     cfg = dict(get_driver().config)
     backend = cfg.get("draw_backend", "")
+    suffixes = BACKEND_DEFAULTS.get(backend, {})
 
-    api_url_raw = cfg.get("draw_api_url", "")
-    api_url_edits_raw = cfg.get("draw_api_url_edits", "")
-
-    if api_url_raw:
-        if not api_url_raw.startswith(("http://", "https://")):
-            raise ValueError("draw_api_url 必须以 http:// 或 https:// 开头")
-        api_url_raw = api_url_raw.rstrip("/")
-        api_url_raw = _normalize_base(api_url_raw)
-        if not api_url_raw.endswith("/v1"):
-            raise ValueError("draw_api_url 必须以 /v1 结尾（如 https://apihub.agnes-ai.com/v1）")
-        full_url = f"{api_url_raw}/images/generations"
-    elif backend in BACKEND_DEFAULTS:
-        full_url = BACKEND_DEFAULTS[backend]["base"] + BACKEND_DEFAULTS[backend]["txt2img"]
-    else:
-        raise ValueError("draw_api_url 或 draw_backend 必须设置其一")
-
-    if api_url_edits_raw:
-        if not api_url_edits_raw.startswith(("http://", "https://")):
-            raise ValueError("draw_api_url_edits 必须以 http:// 或 https:// 开头")
-        edits_url = _normalize_base(api_url_edits_raw)
-        if not edits_url.endswith("/v1"):
-            raise ValueError("draw_api_url_edits 必须以 /v1 结尾")
-        edits_full = f"{edits_url}/images/edits"
+    full_url = _resolve_endpoint(cfg.get("draw_api_url", ""), backend, suffixes.get("txt2img", "/images/generations"))
+    if cfg.get("draw_api_url_edits"):
+        edits_full = _resolve_endpoint(
+            cfg.get("draw_api_url_edits", ""), backend, suffixes.get("img2img", "/images/edits")
+        )
     elif backend in BACKEND_DEFAULTS:
         edits_full = BACKEND_DEFAULTS[backend]["base"] + BACKEND_DEFAULTS[backend]["img2img"]
     else:
         edits_full = full_url.replace("/images/generations", "/images/edits")
 
-    model = cfg.get("draw_model") or BACKEND_DEFAULTS.get(backend, {}).get("default_model", "flux")
-
-    headers = {"Content-Type": "application/json"}
     api_key = cfg.get("draw_api_key", "")
+    headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -114,7 +108,7 @@ def _get_config() -> dict:
         "api_url": full_url,
         "api_url_edits": edits_full,
         "api_key": api_key,
-        "model": model,
+        "model": cfg.get("draw_model") or suffixes.get("default_model", "flux"),
         "backend": backend,
         "default_size": cfg.get("draw_default_size", "1024x1024"),
         "timeout": cfg.get("draw_timeout", 120),
@@ -136,19 +130,9 @@ def _get_config() -> dict:
     return _config
 
 
-def _clear_config() -> None:
-    global _config
-    _config = None
-
-
-def is_private_message(event: Event) -> bool:
-    return not event.get_session_id().startswith(("group_", "channel_"))
-
-
 def check_whitelist_blacklist(event: Event) -> tuple[bool, str]:
     cfg = _get_config()
     user_id = event.get_user_id()
-
     if cfg["whitelist_mode"]:
         return (user_id in cfg["whitelist"], "不在白名单中")
     return (user_id not in cfg["blacklist"], "在黑名单中")
@@ -156,14 +140,10 @@ def check_whitelist_blacklist(event: Event) -> tuple[bool, str]:
 
 def check_nsfw(prompt: str) -> tuple[bool, str | None]:
     cfg = _get_config()
-    if not cfg.get("nsfw_enabled"):
+    if not cfg.get("nsfw_enabled") or not (keywords := cfg.get("nsfw_keywords", [])):
         return False, None
-    keywords = cfg.get("nsfw_keywords", [])
-    if not keywords:
-        return False, None
-    words = re.findall(r"[\w\u4e00-\u9fff]+", prompt.lower())
     nsfw_set = {kw.lower() for kw in keywords}
-    for word in words:
+    for word in re.findall(r"[\w\u4e00-\u9fff]+", prompt.lower()):
         if word in nsfw_set:
             return True, word
     return False, None
@@ -173,54 +153,41 @@ def _safe_headers(headers: dict) -> dict:
     return {k: ("***" if k.lower() == "authorization" else v) for k, v in headers.items()}
 
 
-def _save_b64_to_cache(b64: str) -> Path:
-    cfg = _get_config()
-    cache_dir = Path(cfg["cache_dir"]) / date.today().isoformat()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    img_path = cache_dir / f"{uuid.uuid4().hex}.png"
-    img_path.write_bytes(base64.b64decode(b64))
-    logger.info(f"[绘图] 已保存缓存: {img_path}")
-    return img_path
-
-
-async def _download_to_bytes(url: str) -> bytes:
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.content
-
-
 def _b64_to_result(b64: str) -> Path:
     cfg = _get_config()
     if cfg["cache_enabled"]:
-        return _save_b64_to_cache(b64)
-    cache_path = Path(cfg["cache_dir"]) / f".tmp-{uuid.uuid4().hex}.png"
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_bytes(base64.b64decode(b64))
-    return cache_path
+        cache_dir = Path(cfg["cache_dir"]) / date.today().isoformat()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / f"{uuid.uuid4().hex}.png"
+        logger.info(f"[绘图] 已保存缓存: {path}")
+    else:
+        path = Path(cfg["cache_dir"]) / f".tmp-{uuid.uuid4().hex}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(base64.b64decode(b64))
+    return path
 
 
 def _extract_image_data(resp: ImageResponse) -> str | Path:
     if not resp.data:
         safe = resp.model_dump(exclude={"usage"}, exclude_none=True)
         raise ValueError(f"API 返回格式异常: {safe}")
-    img_data = resp.data[0]
-    if img_data.b64_json:
-        return _b64_to_result(img_data.b64_json)
-    if img_data.url:
-        return img_data.url
+    img = resp.data[0]
+    if img.b64_json:
+        return _b64_to_result(img.b64_json)
+    if img.url:
+        return img.url
     raise ValueError("API 未返回图片 URL 或 b64_json")
 
 
 def _build_usage_info(resp: ImageResponse, cfg: dict) -> UsageInfo:
-    if resp.usage or resp.model:
-        return UsageInfo(
-            model=resp.model or cfg["model"],
-            input_tokens=resp.usage.input_tokens if resp.usage else None,
-            output_tokens=resp.usage.output_tokens if resp.usage else None,
-            total_tokens=resp.usage.total_tokens if resp.usage else None,
-        )
-    return UsageInfo(model=cfg["model"])
+    if not (resp.usage or resp.model):
+        return UsageInfo(model=cfg["model"])
+    return UsageInfo(
+        model=resp.model or cfg["model"],
+        input_tokens=resp.usage.input_tokens if resp.usage else None,
+        output_tokens=resp.usage.output_tokens if resp.usage else None,
+        total_tokens=resp.usage.total_tokens if resp.usage else None,
+    )
 
 
 def _sanitize_for_log(obj):
@@ -232,21 +199,20 @@ def _sanitize_for_log(obj):
 
 
 def _format_error(status: int, body: str) -> str:
-    if not body:
-        return f"API 返回 {status}"
-    return f"API 返回 {status}: {body}"
+    return f"API 返回 {status}: {body}" if body else f"API 返回 {status}"
 
 
-async def _post_with_retry(client: httpx.AsyncClient, *, url: str, headers: dict, **kwargs) -> ImageResponse:
+async def _post_json(client: httpx.AsyncClient, url: str, headers: dict, payload: dict) -> ImageResponse:
+    logger.debug(f"[绘图] 请求体: {payload}")
+    logger.debug(f"[绘图] headers: {_safe_headers(headers)}")
     try:
-        response = await client.post(url, headers=headers, **kwargs)
+        response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
     except httpx.HTTPStatusError as e:
         body = e.response.text or ""
         try:
             err = e.response.json().get("error", {})
-            code = err.get("code", "")
-            msg = err.get("message", body)
+            code, msg = err.get("code", ""), err.get("message", body)
             if code and msg:
                 body = f"[{code}] {msg}"
             elif msg:
@@ -260,7 +226,14 @@ async def _post_with_retry(client: httpx.AsyncClient, *, url: str, headers: dict
     return resp
 
 
-def _build_json_payload(cfg: dict, prompt: str) -> dict:
+def _client_kwargs(cfg: dict) -> dict:
+    kw: dict = {"timeout": cfg["timeout"]}
+    if cfg.get("proxy"):
+        kw["proxy"] = cfg["proxy"]
+    return kw
+
+
+def _json_payload(cfg: dict, prompt: str) -> dict:
     payload: dict = {
         "model": cfg["model"],
         "prompt": prompt,
@@ -274,42 +247,26 @@ def _build_json_payload(cfg: dict, prompt: str) -> dict:
     return payload
 
 
-async def _post_json(client: httpx.AsyncClient, url: str, payload: dict, headers: dict) -> ImageResponse:
-    logger.debug(f"[绘图] 请求体: {payload}")
-    logger.debug(f"[绘图] headers: {_safe_headers(headers)}")
-    return await _post_with_retry(client, url=url, headers=headers, json=payload)
+def _require_api_key(cfg: dict) -> None:
+    if cfg["backend"] in KEY_NEEDED_BACKENDS and not cfg["api_key"]:
+        raise ValueError("未配置 DRAW_API_KEY")
 
 
 async def generate_image(prompt: str) -> tuple[str | Path, UsageInfo]:
     cfg = _get_config()
-    if cfg["backend"] in KEY_NEEDED_BACKENDS and not cfg["api_key"]:
-        raise ValueError("未配置 DRAW_API_KEY")
-
-    payload = _build_json_payload(cfg, prompt)
-    client_kwargs: dict = {"timeout": cfg["timeout"]}
-    if cfg.get("proxy"):
-        client_kwargs["proxy"] = cfg["proxy"]
-
-    async with httpx.AsyncClient(**client_kwargs) as client:
+    _require_api_key(cfg)
+    async with httpx.AsyncClient(**_client_kwargs(cfg)) as client:
         logger.info(f"[绘图] 请求: model={cfg['model']}, prompt_len={len(prompt)}, mode=txt2img")
-        resp = await _post_json(client, cfg["api_url"], payload, cfg["headers"])
+        resp = await _post_json(client, cfg["api_url"], cfg["headers"], _json_payload(cfg, prompt))
         result = _extract_image_data(resp)
         usage_info = _build_usage_info(resp, cfg)
         logger.info(f"[绘图] 生成成功: {result}")
         return result, usage_info
 
 
-async def edit_image(prompt: str, image_url: str) -> tuple[str | Path, UsageInfo]:
+async def edit_image(prompt: str, image_b64: str) -> tuple[str | Path, UsageInfo]:
     cfg = _get_config()
-    if cfg["backend"] in KEY_NEEDED_BACKENDS and not cfg["api_key"]:
-        raise ValueError("未配置 DRAW_API_KEY")
-
-    logger.info(f"[绘图] 准备垫图: {image_url}")
-    image_bytes = await _download_to_bytes(image_url)
-
-    client_kwargs: dict = {"timeout": cfg["timeout"]}
-    if cfg.get("proxy"):
-        client_kwargs["proxy"] = cfg["proxy"]
+    _require_api_key(cfg)
 
     form_data: dict = {
         "model": cfg["model"],
@@ -321,12 +278,18 @@ async def edit_image(prompt: str, image_url: str) -> tuple[str | Path, UsageInfo
     if fmt := cfg.get("response_format"):
         form_data["response_format"] = fmt
 
-    files = {"image": ("image.png", image_bytes, "image/png")}
+    files = {"image": ("image.png", base64.b64decode(image_b64), "image/png")}
     headers = {"Authorization": cfg["headers"]["Authorization"]} if cfg["headers"].get("Authorization") else {}
 
-    async with httpx.AsyncClient(**client_kwargs) as client:
+    async with httpx.AsyncClient(**_client_kwargs(cfg)) as client:
         logger.info(f"[绘图] 请求: model={cfg['model']}, prompt_len={len(prompt)}, mode=img2img")
-        resp = await _post_with_retry(client, url=cfg["api_url_edits"], headers=headers, data=form_data, files=files)
+        try:
+            response = await client.post(cfg["api_url_edits"], headers=headers, data=form_data, files=files)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(_format_error(e.response.status_code, (e.response.text or "").strip())) from e
+        resp = ImageResponse.model_validate(response.json())
+        logger.info(f"[绘图] 响应: {_sanitize_for_log(resp.model_dump(exclude_none=True))}")
         result = _extract_image_data(resp)
         usage_info = _build_usage_info(resp, cfg)
         logger.info(f"[绘图] 生成成功: {result}")
@@ -338,10 +301,8 @@ def cleanup_cache(ttl: int | None = None) -> tuple[int, int]:
     cache_root = Path(cfg["cache_dir"])
     if not cache_root.exists():
         return 0, 0
-    expire_sec = ttl if ttl is not None else cfg["cache_ttl"]
-    threshold = time.time() - expire_sec
-    deleted = 0
-    remaining = 0
+    threshold = time.time() - (ttl if ttl is not None else cfg["cache_ttl"])
+    deleted = remaining = 0
     for p in cache_root.rglob("*.png"):
         try:
             if p.stat().st_mtime < threshold:

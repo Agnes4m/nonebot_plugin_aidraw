@@ -7,21 +7,13 @@ import time
 
 from arclet.alconna import Alconna, Args, Arparma, CommandMeta, Option
 import httpx
-from nonebot import get_driver
+from nonebot import Bot, get_driver
 from nonebot.adapters import Event
 from nonebot.log import logger
 from nonebot.permission import SUPERUSER
 from nonebot_plugin_alconna import Image, UniMessage, UniMsg, on_alconna
 
-from .api import (
-    _get_config,
-    check_nsfw,
-    check_whitelist_blacklist,
-    cleanup_cache,
-    edit_image,
-    generate_image,
-    is_private_message,
-)
+from .api import _get_config, check_nsfw, check_whitelist_blacklist, cleanup_cache, edit_image, generate_image
 
 _DOWNLOAD_TIMEOUT = 60
 
@@ -36,7 +28,6 @@ draw_alc = Alconna(
         example="/绘图 一只可爱的小猫\n/绘图 --model gpt-image-1.5 --size 1024x1792 风景",
     ),
 )
-
 draw_command = on_alconna(
     draw_alc, auto_send_output=False, use_origin=False, skip_for_unmatch=False, response_self=True
 )
@@ -65,79 +56,101 @@ async def _send_image(result: str | Path) -> None:
     except Exception as e:
         logger.warning(f"[绘图] URL 发送失败，回退下载转 base64: {e}")
         async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
-            resp = await client.get(result)
-            resp.raise_for_status()
-            data = resp.content
+            data = (await client.get(result)).content
         await UniMessage.image(url=_to_data_uri(data)).send()
 
 
 def _check_cooldown(user_id: str, cooldown_sec: int) -> tuple[bool, int]:
-    if cooldown_sec <= 0:
+    if cooldown_sec <= 0 or (last := _user_last_request.get(user_id)) is None:
         return True, 0
-    last = _user_last_request.get(user_id)
-    if last is None:
-        return True, 0
-    elapsed = time.time() - last
-    remain = cooldown_sec - int(elapsed)
+    remain = cooldown_sec - int(time.time() - last)
     return (True, 0) if remain <= 0 else (False, remain)
 
 
+def _find_image_segment(event: Event, unimsg: UniMsg):
+    if event.reply:
+        for seg in event.reply.message:
+            if seg.type == "image":
+                return seg
+    for img in unimsg[Image]:
+        return img
+    return None
+
+
+async def _fetch_image_bytes(bot: Bot, seg) -> bytes | None:
+    data = seg.data or {}
+    if data.get("base64"):
+        return base64.b64decode(data["base64"])
+
+    file_ref = data.get("file") or data.get("url")
+    if file_ref:
+        try:
+            resp = await bot.call_api("get_image", file=file_ref)
+            b64 = resp.get("base64") if isinstance(resp, dict) else None
+            if b64:
+                return base64.b64decode(b64)
+        except Exception as e:
+            logger.warning(f"[绘图] get_image 失败 ({file_ref}): {e}")
+
+    if url := data.get("url"):
+        try:
+            async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
+                return (await client.get(url)).content
+        except Exception as e:
+            logger.warning(f"[绘图] URL 下载失败 ({url}): {e}")
+    return None
+
+
+def _is_group(event: Event) -> bool:
+    return event.get_session_id().startswith(("group_", "channel_"))
+
+
+async def _finish_with(text: str):
+    return await UniMessage.text(text).finish()
+
+
 @draw_command.handle()
-async def handle_draw(event: Event, arp: Arparma, unimsg: UniMsg):
+async def handle_draw(bot: Bot, event: Event, arp: Arparma, unimsg: UniMsg):
     global _pending
+
     if not (passed := check_whitelist_blacklist(event))[0]:
-        return await UniMessage.text(f"❌ 访问被拒绝：{passed[1]}").finish()
+        return await _finish_with(f"❌ 访问被拒绝：{passed[1]}")
 
     prompt = (arp.main_args.get("prompt", "") if hasattr(arp, "main_args") else "").strip()
     if not prompt:
         prompt = unimsg.extract_plain_text().strip()
+    if not prompt:
+        return await _finish_with("❌ 请提供绘图提示词\n例如: /绘图 一只可爱的小猫")
 
     cfg = _get_config()
     user_id = event.get_user_id()
-    cooldown_sec = cfg.get("user_cooldown", 60)
-
-    superusers = set(get_driver().config.superusers)
-    is_superuser = user_id in superusers
+    is_superuser = user_id in set(get_driver().config.superusers)
 
     if not is_superuser:
-        ok, remain = _check_cooldown(user_id, cooldown_sec)
+        ok, remain = _check_cooldown(user_id, cfg.get("user_cooldown", 60))
         if not ok:
             mins, secs = divmod(remain, 60)
-            return await UniMessage.text(f"⏳ 冷却中，还需等待 {mins}分{secs}秒").finish()
+            return await _finish_with(f"⏳ 冷却中，还需等待 {mins}分{secs}秒")
 
-    if not is_private_message(event):
-        is_nsfw, keyword = check_nsfw(prompt)
-        if is_nsfw:
-            return await UniMessage.text(f"❌ 检测到敏感词「{keyword}」").finish()
+    if _is_group(event) and (hit := check_nsfw(prompt))[0]:
+        return await _finish_with(f"❌ 检测到敏感词「{hit[1]}」")
 
-    if not prompt:
-        return await UniMessage.text("❌ 请提供绘图提示词\n例如: /绘图 一只可爱的小猫").finish()
-
-    model_override = None
-    size_override = None
-    n_override = None
-    try:
-        for opt in arp.options:
-            name = opt.name if hasattr(opt, "name") else None
-            if name == "model":
-                model_override = opt.value.get("model") if hasattr(opt, "value") else None
-            elif name == "size":
-                size_override = opt.value.get("size") if hasattr(opt, "value") else None
-            elif name == "n":
-                n_override = opt.value.get("n") if hasattr(opt, "value") else None
-    except Exception:
-        pass
-
-    used_model = model_override or cfg.get("model", "unknown")
-    used_size = size_override or cfg.get("default_size", "1024x1024")
-
+    used_model = (arp.options.get("model", {}) or {}).get("model") or cfg.get("model", "unknown")
     _pending += 1
-    pending_snapshot = _pending
-    if pending_snapshot > 1:
-        msg = f"🎨 正在使用 {used_model} 生成中（前面还有 {pending_snapshot - 1} 个请求）..."
-    else:
-        msg = f"🎨 正在使用 {used_model} 生成中..."
-    await UniMessage.text(msg).send()
+    queue_hint = f"（前面还有 {_pending - 1} 个请求）..." if _pending > 1 else "..."
+    await UniMessage.text(f"🎨 正在使用 {used_model} 生成中{queue_hint}").send()
+
+    image_b64: str | None = None
+    if seg := _find_image_segment(event, unimsg):
+        image_bytes = await _fetch_image_bytes(bot, seg)
+        if image_bytes is None:
+            _pending -= 1
+            return await _finish_with("❌ 获取垫图失败，请重试或联系管理员")
+        image_b64 = base64.b64encode(image_bytes).decode()
+        logger.info(f"[绘图] 垫图就绪: {len(image_bytes)} bytes")
+
+    mode = "img2img" if image_b64 else "txt2img"
+    logger.info(f"[绘图] 请求: prompt={prompt!r}, model={used_model}, mode={mode}")
 
     result: str | Path | None = None
     usage_info = None
@@ -145,33 +158,9 @@ async def handle_draw(event: Event, arp: Arparma, unimsg: UniMsg):
     try:
         async with _draw_lock:
             _user_last_request[user_id] = time.time()
-            image_url: str | None = None
-            if event.reply:
-                for seg in event.reply.message:
-                    if seg.type == "image" and seg.data.get("url"):
-                        image_url = seg.data["url"]
-                        break
-            if image_url is None:
-                for img in unimsg[Image]:
-                    if img.data.get("url"):
-                        image_url = img.data["url"]
-                        break
-
-            from .api import _get_config as _g
-
-            c = _g()
-            if size_override:
-                c["default_size"] = size_override
-            if n_override:
-                c["n"] = n_override
-            if model_override:
-                c["model"] = model_override
-
-            if image_url:
-                logger.info(f"[绘图] 请求: prompt={prompt!r}, model={used_model}, size={used_size}, mode=img2img")
-                result, usage_info = await edit_image(prompt, image_url)
+            if image_b64:
+                result, usage_info = await edit_image(prompt, image_b64)
             else:
-                logger.info(f"[绘图] 请求: prompt={prompt!r}, model={used_model}, size={used_size}, mode=txt2img")
                 result, usage_info = await generate_image(prompt)
     except Exception as e:
         logger.exception(f"[绘图] 生成失败: {e}")
@@ -180,7 +169,7 @@ async def handle_draw(event: Event, arp: Arparma, unimsg: UniMsg):
         _pending -= 1
 
     if error_msg:
-        return await UniMessage.text(f"❌ 生成失败: {error_msg}").finish()
+        return await _finish_with(f"❌ 生成失败: {error_msg}")
 
     try:
         await _send_image(result)
@@ -188,7 +177,7 @@ async def handle_draw(event: Event, arp: Arparma, unimsg: UniMsg):
             await UniMessage.text(f"📊 本次消耗: {usage_info.format()}").send()
     except Exception as e:
         logger.exception(f"[绘图] 发送失败: {e}")
-        await UniMessage.text(f"❌ 发送失败: {result}").finish()
+        await _finish_with(f"❌ 发送失败: {result}")
     finally:
         if isinstance(result, Path) and not cfg.get("cache_enabled", False):
             try:
@@ -199,8 +188,7 @@ async def handle_draw(event: Event, arp: Arparma, unimsg: UniMsg):
 
 @clear_cache_command.handle()
 async def handle_clear_cache():
-    cfg = _get_config()
-    if not cfg.get("cache_enabled", False):
-        return await UniMessage.text("ℹ️ 缓存功能未启用（draw_cache_enabled=False），无需清理").finish()
+    if not _get_config().get("cache_enabled", False):
+        return await _finish_with("ℹ️ 缓存功能未启用（draw_cache_enabled=False），无需清理")
     deleted, remaining = cleanup_cache()
-    return await UniMessage.text(f"🧹 清理完成：删除 {deleted} 个，剩余 {remaining} 个").finish()
+    return await _finish_with(f"🧹 清理完成：删除 {deleted} 个，剩余 {remaining} 个")
