@@ -1,8 +1,11 @@
 """绘图 API 调用与配置访问"""
 
 import base64
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 import re
+import time
 import uuid
 
 import httpx
@@ -15,20 +18,33 @@ from .models import ImageResponse
 _config: dict | None = None
 
 BACKEND_DEFAULTS = {
-    "openai": "https://api.openai.com/v1/images/generations",
-    "gemini": "https://generativelanguage.googleapis.com/v1beta/images/generations",
-    "sd": "http://localhost:7860/sdapi/v1/txt2img",
+    "openai": ("https://api.openai.com/v1/images/generations", "gpt-image-2"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/images/generations", "gemini-pro"),
+    "sd": ("http://localhost:7860/sdapi/v1/txt2img", "sd15"),
 }
 
-BACKEND_MODELS = {
-    "openai": "gpt-image-2",
-    "gemini": "gemini-pro",
-    "sd": "sd15",
-}
+KEY_NEEDED_BACKENDS = {"openai", "gemini"}
+
+
+@dataclass
+class UsageInfo:
+    model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+    def format(self) -> str:
+        parts = [f"model={self.model}"]
+        if self.input_tokens is not None:
+            parts.append(f"in={self.input_tokens}")
+        if self.output_tokens is not None:
+            parts.append(f"out={self.output_tokens}")
+        if self.total_tokens is not None:
+            parts.append(f"total={self.total_tokens}")
+        return ", ".join(parts)
 
 
 def _get_config() -> dict:
-    """延迟获取配置"""
     global _config
     if _config is not None:
         return _config
@@ -36,25 +52,26 @@ def _get_config() -> dict:
     cfg = dict(get_driver().config)
     backend = cfg.get("draw_backend", "")
     api_url = cfg.get("draw_api_url", "")
-    model = cfg.get("draw_model", "") or BACKEND_MODELS.get(backend, "flux")
 
-    if backend and api_url:
-        base = BACKEND_DEFAULTS.get(backend, "").rsplit("/", 1)[0]
-        full_url = api_url if api_url.startswith("http") else f"{base}/{api_url}"
-    elif backend:
-        full_url = BACKEND_DEFAULTS.get(backend, "")
-    elif api_url:
-        full_url = api_url if api_url.startswith("http") else api_url
+    if api_url:
+        if not api_url.startswith(("http://", "https://")):
+            raise ValueError("draw_api_url 必须以 http:// 或 https:// 开头")
+        full_url = api_url
+    elif backend in BACKEND_DEFAULTS:
+        full_url, default_model = BACKEND_DEFAULTS[backend]
     else:
         raise ValueError("draw_api_url 或 draw_backend 必须设置其一")
 
+    model = cfg.get("draw_model") or BACKEND_DEFAULTS.get(backend, ("", "flux"))[1]
+
     headers = {"Content-Type": "application/json"}
-    if backend == "openai":
-        headers["Authorization"] = f"Bearer {cfg.get('draw_api_key', '')}"
+    api_key = cfg.get("draw_api_key", "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     _config = {
         "api_url": full_url,
-        "api_key": cfg.get("draw_api_key", ""),
+        "api_key": api_key,
         "model": model,
         "backend": backend,
         "default_size": cfg.get("draw_default_size", "1024x1024"),
@@ -68,38 +85,34 @@ def _get_config() -> dict:
         "quality": cfg.get("draw_quality"),
         "n": cfg.get("draw_n"),
         "response_format": cfg.get("draw_response_format"),
-        "user_cooldown": cfg.get("draw_user_cooldown", 30),
+        "user_cooldown": cfg.get("draw_user_cooldown", 60),
+        "cache_enabled": cfg.get("draw_cache_enabled", False),
+        "cache_dir": cfg.get("draw_cache_dir", "data/nonebot_plugin_easy_aidraw"),
+        "cache_ttl": cfg.get("draw_cache_ttl", 86400),
         "headers": headers,
     }
     return _config
 
 
 def _clear_config() -> None:
-    """清除缓存的配置，供测试用"""
     global _config
     _config = None
 
 
 def is_private_message(event: Event) -> bool:
-    """判断是否为私聊消息"""
     return not event.get_session_id().startswith(("group_", "channel_"))
 
 
 def check_whitelist_blacklist(event: Event) -> tuple[bool, str]:
-    """检查黑白名单"""
     cfg = _get_config()
-    session_id = event.get_session_id()
-    target_id = (
-        f"group_{session_id.split('_', 1)[1]}" if session_id.startswith("group_") else session_id.split("_", 1)[-1]
-    )
+    user_id = event.get_user_id()
 
     if cfg["whitelist_mode"]:
-        return (target_id in cfg["whitelist"], "不在白名单中")
-    return (target_id not in cfg["blacklist"], "在黑名单中")
+        return (user_id in cfg["whitelist"], "不在白名单中")
+    return (user_id not in cfg["blacklist"], "在黑名单中")
 
 
 def check_nsfw(prompt: str) -> tuple[bool, str | None]:
-    """检查 NSFW 关键词"""
     cfg = _get_config()
     if not cfg.get("nsfw_enabled"):
         return False, None
@@ -114,30 +127,26 @@ def check_nsfw(prompt: str) -> tuple[bool, str | None]:
     return False, None
 
 
-def _truncate(val: str, length: int = 100) -> str:
-    return val[:length] + "..." if len(val) > length else val
+def _safe_headers(headers: dict) -> dict:
+    return {k: ("***" if k.lower() == "authorization" else v) for k, v in headers.items()}
 
 
-def _log_payload(payload: dict) -> None:
-    def _sanitize(v: str) -> str:
-        if len(v) > 100:
-            return _truncate(v, 100)
-        return v
-
-    log: dict = {}
-    for k, v in payload.items():
-        if k == "extra_body":
-            log[k] = {kk: _sanitize(str(vv)) for kk, vv in v.items()} if isinstance(v, dict) else v
-        else:
-            log[k] = _sanitize(v) if isinstance(v, str) else v
-    logger.debug(f"[绘图] 请求体: {log}")
+def _save_b64_to_cache(b64: str) -> Path:
+    cfg = _get_config()
+    cache_dir = Path(cfg["cache_dir"]) / date.today().isoformat()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    img_path = cache_dir / f"{uuid.uuid4().hex}.png"
+    img_path.write_bytes(base64.b64decode(b64))
+    logger.info(f"[绘图] 已保存缓存: {img_path}")
+    return img_path
 
 
-async def generate_image(prompt: str, image_urls: list[str] | None = None) -> str | Path:
-    """调用 API 生成图片，返回 URL 或本地路径"""
+async def generate_image(
+    prompt: str, image_urls: list[str] | None = None
+) -> tuple[str | Path | None, UsageInfo | None]:
     cfg = _get_config()
 
-    if not cfg["api_key"]:
+    if cfg["backend"] in KEY_NEEDED_BACKENDS and not cfg["api_key"]:
         raise ValueError("未配置 DRAW_API_KEY")
 
     payload: dict = {
@@ -159,40 +168,81 @@ async def generate_image(prompt: str, image_urls: list[str] | None = None) -> st
     if cfg.get("proxy"):
         client_kwargs["proxy"] = cfg["proxy"]
 
-    _log_payload(payload)
+    logger.debug(f"[绘图] 请求体: {payload}")
+    logger.debug(f"[绘图] prompt: {prompt}")
+    logger.debug(f"[绘图] image_urls: {image_urls}")
+    logger.debug(f"[绘图] headers: {_safe_headers(cfg['headers'])}")
 
     async with httpx.AsyncClient(**client_kwargs) as client:
         logger.info(f"[绘图] 请求: model={cfg['model']}, prompt_len={len(prompt)}")
-        response = await client.post(cfg["api_url"], json=payload, headers=cfg["headers"])
-        response.raise_for_status()
+        try:
+            response = await client.post(cfg["api_url"], json=payload, headers=cfg["headers"])
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            err_body = ""
+            try:
+                err = e.response.json().get("error", {})
+                code = err.get("code", "")
+                msg = err.get("message", e.response.text)
+                err_body = f"[{code}] {msg}" if code else msg
+            except Exception:
+                err_body = e.response.text
+            raise RuntimeError(f"API 返回 {e.response.status_code}: {err_body}") from e
 
         resp = ImageResponse.model_validate(response.json())
 
-        def _sanitize_json(obj):
-            if isinstance(obj, str):
-                return _truncate(obj, 100)
-            if isinstance(obj, dict):
-                return {k: _sanitize_json(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [_sanitize_json(item) for item in obj]
-            return obj
-
-        logger.debug(f"[绘图] 响应: {_sanitize_json(resp.model_dump())}")
-
         if not resp.data:
-            raise ValueError(f"API 返回格式异常: {resp}")
+            safe = resp.model_dump(exclude={"usage"}, exclude_none=True)
+            raise ValueError(f"API 返回格式异常: {safe}")
 
         img_data = resp.data[0]
-
-        if img_data.url:
-            return img_data.url
+        result: str | Path | None = None
 
         if img_data.b64_json:
-            cache_dir = Path("data/nonebot_plugin_easy_aidraw")
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            img_path = cache_dir / f"{uuid.uuid4().hex}.png"
-            img_path.write_bytes(base64.b64decode(img_data.b64_json))
-            logger.info(f"[绘图] 已保存本地: {img_path}")
-            return img_path
+            if cfg["cache_enabled"]:
+                result = _save_b64_to_cache(img_data.b64_json)
+            else:
+                cache_path = Path(cfg["cache_dir"]) / f".tmp-{uuid.uuid4().hex}.png"
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_bytes(base64.b64decode(img_data.b64_json))
+                result = cache_path
+        elif img_data.url:
+            result = img_data.url
+        else:
+            raise ValueError("API 未返回图片 URL 或 b64_json")
 
-        raise ValueError("API 未返回图片 URL 或 b64_json")
+        usage_info: UsageInfo | None = None
+        if resp.usage or resp.model:
+            usage_info = UsageInfo(
+                model=resp.model or cfg["model"],
+                input_tokens=resp.usage.input_tokens if resp.usage else None,
+                output_tokens=resp.usage.output_tokens if resp.usage else None,
+                total_tokens=resp.usage.total_tokens if resp.usage else None,
+            )
+        else:
+            usage_info = UsageInfo(model=cfg["model"])
+
+        logger.info(f"[绘图] 生成成功: {result}")
+        return result, usage_info
+
+
+def cleanup_cache(ttl: int | None = None) -> tuple[int, int]:
+    cfg = _get_config()
+    cache_root = Path(cfg["cache_dir"])
+    if not cache_root.exists():
+        return 0, 0
+    expire_sec = ttl if ttl is not None else cfg["cache_ttl"]
+    threshold = time.time() - expire_sec
+    deleted = 0
+    remaining = 0
+    for p in cache_root.rglob("*.png"):
+        try:
+            if p.stat().st_mtime < threshold:
+                p.unlink()
+                deleted += 1
+            else:
+                remaining += 1
+        except OSError as e:
+            logger.warning(f"[绘图] 清理失败 {p}: {e}")
+    logger.info(f"[绘图] 缓存清理: 删除={deleted}, 剩余={remaining}")
+    return deleted, remaining

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 class EnvConfig(BaseModel):
     draw_api_url: str = ""
     draw_api_key: str = ""
-    draw_model: str = "gpt-image-2"
+    draw_model: str = ""
     draw_backend: str = ""
     draw_default_size: str = "1024x1024"
     draw_timeout: int = 120
@@ -19,7 +19,10 @@ class EnvConfig(BaseModel):
     draw_quality: str | None = None
     draw_n: int | None = None
     draw_response_format: str | None = None
-    draw_user_cooldown: int = 30
+    draw_user_cooldown: int = 60
+    draw_cache_enabled: bool = False
+    draw_cache_dir: str = "data/nonebot_plugin_easy_aidraw"
+    draw_cache_ttl: int = 86400
 
     class Config:
         populate_by_name = True

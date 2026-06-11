@@ -41,10 +41,10 @@ nb plugin install nonebot-plugin-easy-aidraw
 # .env 文件
 draw_api_key = "your-api-key"          # API 密钥
 draw_backend = "openai"                # openai / gemini / sd
-draw_api_url = ""                      # 自定义 API 地址（留空用默认）
-draw_model = "gpt-image-2"              # 模型名称
+draw_api_url = ""                      # 自定义 API 地址（留空用默认），必须以 http:// 或 https:// 开头
+draw_model = "gpt-image-2"             # 模型名称
 draw_default_size = "1024x1024"        # 图片尺寸
-draw_proxy = ""                         # HTTP 代理，如 http://127.0.0.1:10808
+draw_proxy = ""                        # HTTP 代理，如 http://127.0.0.1:10808
 ```
 
 > `draw_api_url` 和 `draw_backend` 至少设置其一
@@ -55,32 +55,48 @@ draw_proxy = ""                         # HTTP 代理，如 http://127.0.0.1:108
 ### 使用
 
 - `/绘图 一只可爱的小猫`
+- `/绘图 --model gpt-image-1.5 --size 1024x1792 风景`
+- `/绘图 --n 2 同一提示词生成两张`
 - 回复图片 + `/绘图 画成动漫风`（以图片为垫图）
 - 回复消息 + `/绘图 ...`（从被回复消息中提取图片）
 
 ### 可选功能
 
 ```bash
-draw_user_cooldown = 30                # 单用户冷却时间（分钟），0 禁用
+draw_user_cooldown = 60                # 单用户冷却时间（秒），0 禁用
 draw_nsfw_enabled = true               # 启用 NSFW 关键词过滤（仅群聊）
 draw_nsfw_keywords = ["敏感词1", "敏感词2"]
 draw_whitelist_mode = true             # 白名单模式
-draw_whitelist = ["group_123456"]      # 白名单 ID
-draw_blacklist = ["group_654321"]       # 黑名单 ID
-draw_quality = "standard"               # openai 图片质量
+draw_whitelist = ["123456"]            # 白名单用户 ID（QQ 号），对群/私聊统一生效
+draw_blacklist = ["654321"]            # 黑名单用户 ID
+draw_quality = "standard"              # openai 图片质量
 draw_n = 1                             # openai 生成数量
-draw_response_format = "url"            # 返回格式 url / b64_json
+draw_response_format = "url"           # 返回格式 url / b64_json
+draw_cache_enabled = false             # 是否将 b64 图片落盘缓存（默认关闭）
+draw_cache_dir = "data/nonebot_plugin_easy_aidraw"  # 缓存目录
+draw_cache_ttl = 86400                 # 缓存过期时间（秒），用于 /清理绘图缓存
 ```
+
+### 超级用户指令
+
+```bash
+/清理绘图缓存
+```
+
+清理超过 `draw_cache_ttl` 秒的缓存图片（按 mtime 判断）。仅在 `draw_cache_enabled=true` 时生效。
 
 ## 功能
 
 - 支持 OpenAI / Gemini / Stable Diffusion 多种后端
 - **请求队列**：单用户串行处理，前方有 N 个请求时显示排队位置
-- **用户冷却**：单用户 N 分钟内只能请求一次（可配置，超级用户无视）
+- **用户冷却**：单用户 N 秒内只能请求一次（可配置，超级用户无视）
 - 回复消息中的图片作为垫图
 - NSFW 关键词过滤（仅群聊）
-- 黑白名单访问控制
+- 黑白名单访问控制（按用户 ID，全局生效）
 - URL / base64 两种返回格式（OneBot V11 走 base64:// 发送）
+- 可选图片缓存与一键清理
+- 子选项：`--model` / `--size` / `--n` 覆盖全局配置
+- 发送图片后输出本次 token 用量与模型
 
 ## 协议
 

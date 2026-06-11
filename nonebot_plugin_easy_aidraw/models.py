@@ -14,11 +14,11 @@ class ImageData(BaseModel):
 class Usage(BaseModel):
     """Token 使用量"""
 
-    input_tokens: int
+    input_tokens: int | None = None
     input_tokens_details: dict | None = None
-    output_tokens: int
+    output_tokens: int | None = None
     output_tokens_details: dict | None = None
-    total_tokens: int
+    total_tokens: int | None = None
 
 
 class ImageResponse(BaseModel):
