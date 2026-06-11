@@ -109,6 +109,28 @@ async def _finish_with(text: str):
     return await UniMessage.text(text).finish()
 
 
+def _format_duration(seconds: float) -> str:
+    if seconds < 1:
+        return f"{seconds * 1000:.0f} 毫秒"
+    if seconds < 60:
+        return f"{seconds:.1f} 秒"
+    mins, secs = divmod(int(seconds), 60)
+    return f"{mins}分{secs}秒"
+
+
+def _format_token_usage(usage) -> str:
+    parts = []
+    if usage.input_tokens:
+        parts.append(f"输入 {usage.input_tokens}")
+    if usage.output_tokens:
+        parts.append(f"输出 {usage.output_tokens}")
+    if usage.total_tokens and (usage.input_tokens or usage.output_tokens) is None:
+        parts.append(f"总计 {usage.total_tokens}")
+    elif usage.total_tokens and not (usage.input_tokens or usage.output_tokens):
+        parts.append(f"总计 {usage.total_tokens}")
+    return "、".join(parts) + " tokens" if parts else ""
+
+
 @draw_command.handle()
 async def handle_draw(bot: Bot, event: Event, arp: Arparma, unimsg: UniMsg):
     global _pending
@@ -152,16 +174,25 @@ async def handle_draw(bot: Bot, event: Event, arp: Arparma, unimsg: UniMsg):
     mode = "img2img" if image_b64 else "txt2img"
     logger.info(f"[绘图] 请求: prompt={prompt!r}, model={used_model}, mode={mode}")
 
+    concurrent = cfg.get("concurrent", False)
+    start_ts = time.perf_counter()
     result: str | Path | None = None
     usage_info = None
     error_msg = ""
     try:
-        async with _draw_lock:
+        if concurrent:
             _user_last_request[user_id] = time.time()
             if image_b64:
                 result, usage_info = await edit_image(prompt, image_b64)
             else:
                 result, usage_info = await generate_image(prompt)
+        else:
+            async with _draw_lock:
+                _user_last_request[user_id] = time.time()
+                if image_b64:
+                    result, usage_info = await edit_image(prompt, image_b64)
+                else:
+                    result, usage_info = await generate_image(prompt)
     except Exception as e:
         logger.exception(f"[绘图] 生成失败: {e}")
         error_msg = str(e)
@@ -171,10 +202,15 @@ async def handle_draw(bot: Bot, event: Event, arp: Arparma, unimsg: UniMsg):
     if error_msg:
         return await _finish_with(f"❌ 生成失败: {error_msg}")
 
+    duration = time.perf_counter() - start_ts
+    duration_text = _format_duration(duration)
+
     try:
         await _send_image(result)
-        if usage_info and any(v for v in (usage_info.input_tokens, usage_info.output_tokens, usage_info.total_tokens)):
-            await UniMessage.text(f"📊 本次消耗: {usage_info.format()}").send()
+        summary_parts = [f"⏱️ 耗时 {duration_text}"]
+        if usage_info and (token_text := _format_token_usage(usage_info)):
+            summary_parts.append(f"📊 消耗 {token_text}")
+        await UniMessage.text(" | ".join(summary_parts)).send()
     except Exception as e:
         logger.exception(f"[绘图] 发送失败: {e}")
         await _finish_with(f"❌ 发送失败: {result}")

@@ -19,8 +19,8 @@ class EnvConfig(BaseModel):
     draw_blacklist: list[str] = []
     draw_quality: str | None = None
     draw_n: int | None = None
-    draw_response_format: str | None = None
     draw_user_cooldown: int = 60
+    draw_concurrent: bool = False
     draw_cache_enabled: bool = False
     draw_cache_dir: str = "data/nonebot_plugin_easy_aidraw"
     draw_cache_ttl: int = 86400

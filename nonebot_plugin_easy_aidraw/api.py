@@ -120,8 +120,8 @@ def _get_config() -> dict:
         "blacklist": cfg.get("draw_blacklist", []),
         "quality": cfg.get("draw_quality"),
         "n": cfg.get("draw_n"),
-        "response_format": cfg.get("draw_response_format"),
         "user_cooldown": cfg.get("draw_user_cooldown", 60),
+        "concurrent": cfg.get("draw_concurrent", False),
         "cache_enabled": cfg.get("draw_cache_enabled", False),
         "cache_dir": cfg.get("draw_cache_dir", "data/nonebot_plugin_easy_aidraw"),
         "cache_ttl": cfg.get("draw_cache_ttl", 86400),
@@ -242,8 +242,6 @@ def _json_payload(cfg: dict, prompt: str) -> dict:
     if cfg["backend"] == "openai":
         payload["n"] = cfg.get("n") or 1
         payload["quality"] = cfg.get("quality") or "standard"
-        if fmt := cfg.get("response_format"):
-            payload["response_format"] = fmt
     return payload
 
 
@@ -275,8 +273,6 @@ async def edit_image(prompt: str, image_b64: str) -> tuple[str | Path, UsageInfo
     }
     if cfg["backend"] == "openai":
         form_data["quality"] = cfg.get("quality") or "standard"
-    if fmt := cfg.get("response_format"):
-        form_data["response_format"] = fmt
 
     files = {"image": ("image.png", base64.b64decode(image_b64), "image/png")}
     headers = {"Authorization": cfg["headers"]["Authorization"]} if cfg["headers"].get("Authorization") else {}

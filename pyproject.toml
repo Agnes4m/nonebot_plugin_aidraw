@@ -1,6 +1,6 @@
 [project]
 name = "nonebot-plugin-easy-aidraw"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI绘图插件 for NoneBot2，支持多种绘图API"
 authors = [
     {name = "Agnes4m", email = "Z735803792@163.com"},
