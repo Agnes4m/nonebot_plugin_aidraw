@@ -1,6 +1,6 @@
 """子包配置模块"""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class EnvConfig(BaseModel):
@@ -14,6 +14,7 @@ class EnvConfig(BaseModel):
     draw_proxy: str | None = None
     draw_nsfw_enabled: bool = False
     draw_nsfw_keywords: list[str] = []
+    draw_nsfw_patterns: list[str] = []
     draw_whitelist_mode: bool = False
     draw_whitelist: list[str] = []
     draw_blacklist: list[str] = []
@@ -24,6 +25,6 @@ class EnvConfig(BaseModel):
     draw_cache_enabled: bool = False
     draw_cache_dir: str = "data/nonebot_plugin_easy_aidraw"
     draw_cache_ttl: int = 86400
+    draw_prompt_max_chars: int = 4000
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")

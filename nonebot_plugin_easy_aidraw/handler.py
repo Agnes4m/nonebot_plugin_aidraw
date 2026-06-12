@@ -1,5 +1,7 @@
 """命令注册与业务处理"""
 
+from __future__ import annotations
+
 import asyncio
 import base64
 from pathlib import Path
@@ -13,7 +15,18 @@ from nonebot.log import logger
 from nonebot.permission import SUPERUSER
 from nonebot_plugin_alconna import Image, UniMessage, UniMsg, on_alconna
 
-from .api import _get_config, check_nsfw, check_whitelist_blacklist, cleanup_cache, edit_image, generate_image
+from .api import (
+    check_nsfw,
+    check_prompt_length,
+    check_whitelist_blacklist,
+    cleanup_cache,
+    edit_image,
+    generate_image,
+    get_config,
+)
+from .metrics import metrics
+
+__all__ = ["clear_cache_command", "draw_command"]
 
 _DOWNLOAD_TIMEOUT = 60
 
@@ -47,7 +60,7 @@ def _to_data_uri(data: bytes) -> str:
     return f"base64://{base64.b64encode(data).decode()}"
 
 
-async def _send_image(result: str | Path) -> None:
+async def _send_single(result: str | Path) -> None:
     if isinstance(result, Path):
         await UniMessage.image(url=_to_data_uri(result.read_bytes())).send()
         return
@@ -118,17 +131,30 @@ def _format_duration(seconds: float) -> str:
     return f"{mins}分{secs}秒"
 
 
-def _format_token_usage(usage) -> str:
+def _format_token_usage(usage: dict) -> str:
     parts = []
-    if usage.input_tokens:
-        parts.append(f"输入 {usage.input_tokens}")
-    if usage.output_tokens:
-        parts.append(f"输出 {usage.output_tokens}")
-    if usage.total_tokens and (usage.input_tokens or usage.output_tokens) is None:
-        parts.append(f"总计 {usage.total_tokens}")
-    elif usage.total_tokens and not (usage.input_tokens or usage.output_tokens):
-        parts.append(f"总计 {usage.total_tokens}")
+    if usage.get("input_tokens"):
+        parts.append(f"输入 {usage['input_tokens']}")
+    if usage.get("output_tokens"):
+        parts.append(f"输出 {usage['output_tokens']}")
+    if usage.get("total_tokens") and not (usage.get("input_tokens") or usage.get("output_tokens")):
+        parts.append(f"总计 {usage['total_tokens']}")
     return "、".join(parts) + " tokens" if parts else ""
+
+
+def _build_summary(used_model: str, duration_text: str, usage: dict, count: int) -> str:
+    parts = [f"⏱️ 耗时 {duration_text}"]
+    if token_text := _format_token_usage(usage):
+        parts.append(f"📊 消耗 {token_text}")
+    parts.append(f"🖼️ {count} 张")
+    parts.append(f"🧠 {used_model}")
+    return " | ".join(parts)
+
+
+async def _do_generate(prompt: str, image_b64: str | None) -> tuple[list[str | Path], dict]:
+    if image_b64:
+        return await edit_image(prompt, image_b64)
+    return await generate_image(prompt)
 
 
 @draw_command.handle()
@@ -136,26 +162,30 @@ async def handle_draw(bot: Bot, event: Event, arp: Arparma, unimsg: UniMsg):
     global _pending
 
     if not (passed := check_whitelist_blacklist(event))[0]:
+        metrics.hit("blacklist")
         return await _finish_with(f"❌ 访问被拒绝：{passed[1]}")
 
-    prompt = (arp.main_args.get("prompt", "") if hasattr(arp, "main_args") else "").strip()
-    if not prompt:
-        prompt = unimsg.extract_plain_text().strip()
+    prompt = (arp.main_args.get("prompt", "") or "").strip() or unimsg.extract_plain_text().strip()
     if not prompt:
         return await _finish_with("❌ 请提供绘图提示词\n例如: /绘图 一只可爱的小猫")
 
-    cfg = _get_config()
+    cfg = get_config()
     user_id = event.get_user_id()
     is_superuser = user_id in set(get_driver().config.superusers)
 
     if not is_superuser:
         ok, remain = _check_cooldown(user_id, cfg.get("user_cooldown", 60))
         if not ok:
+            metrics.hit("cooldown")
             mins, secs = divmod(remain, 60)
             return await _finish_with(f"⏳ 冷却中，还需等待 {mins}分{secs}秒")
 
     if _is_group(event) and (hit := check_nsfw(prompt))[0]:
+        metrics.hit("nsfw_blocked")
         return await _finish_with(f"❌ 检测到敏感词「{hit[1]}」")
+
+    if not (ok_len := check_prompt_length(prompt, cfg["model"], cfg.get("prompt_max_chars", 4000)))[0]:
+        return await _finish_with(f"❌ 提示词过长（{ok_len[1]} 字符），上限 {cfg.get('prompt_max_chars', 4000)}")
 
     used_model = (arp.options.get("model", {}) or {}).get("model") or cfg.get("model", "unknown")
     _pending += 1
@@ -172,30 +202,29 @@ async def handle_draw(bot: Bot, event: Event, arp: Arparma, unimsg: UniMsg):
         logger.info(f"[绘图] 垫图就绪: {len(image_bytes)} bytes")
 
     mode = "img2img" if image_b64 else "txt2img"
+    metrics.hit(mode)
     logger.info(f"[绘图] 请求: prompt={prompt!r}, model={used_model}, mode={mode}")
 
     concurrent = cfg.get("concurrent", False)
     start_ts = time.perf_counter()
-    result: str | Path | None = None
-    usage_info = None
+    results: list[str | Path] = []
+    usage_info: dict = {"model": used_model}
     error_msg = ""
     try:
-        if concurrent:
+
+        async def _call():
             _user_last_request[user_id] = time.time()
-            if image_b64:
-                result, usage_info = await edit_image(prompt, image_b64)
-            else:
-                result, usage_info = await generate_image(prompt)
+            return await _do_generate(prompt, image_b64)
+
+        if concurrent:
+            results, usage_info = await _call()
         else:
             async with _draw_lock:
-                _user_last_request[user_id] = time.time()
-                if image_b64:
-                    result, usage_info = await edit_image(prompt, image_b64)
-                else:
-                    result, usage_info = await generate_image(prompt)
+                results, usage_info = await _call()
     except Exception as e:
         logger.exception(f"[绘图] 生成失败: {e}")
         error_msg = str(e)
+        metrics.hit("failed")
     finally:
         _pending -= 1
 
@@ -204,27 +233,30 @@ async def handle_draw(bot: Bot, event: Event, arp: Arparma, unimsg: UniMsg):
 
     duration = time.perf_counter() - start_ts
     duration_text = _format_duration(duration)
+    metrics.hit("success")
 
     try:
-        await _send_image(result)
-        summary_parts = [f"⏱️ 耗时 {duration_text}"]
-        if usage_info and (token_text := _format_token_usage(usage_info)):
-            summary_parts.append(f"📊 消耗 {token_text}")
-        await UniMessage.text(" | ".join(summary_parts)).send()
+        for r in results:
+            await _send_single(r)
+        await UniMessage.text(_build_summary(used_model, duration_text, usage_info, len(results))).send()
     except Exception as e:
         logger.exception(f"[绘图] 发送失败: {e}")
-        await _finish_with(f"❌ 发送失败: {result}")
+        await _finish_with(f"❌ 发送失败: {results}")
     finally:
-        if isinstance(result, Path) and not cfg.get("cache_enabled", False):
-            try:
-                result.unlink(missing_ok=True)
-            except OSError:
-                pass
+        if not cfg.get("cache_enabled", False):
+            for r in results:
+                if isinstance(r, Path):
+                    try:
+                        r.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+    metrics.dump()
 
 
 @clear_cache_command.handle()
 async def handle_clear_cache():
-    if not _get_config().get("cache_enabled", False):
+    if not get_config().get("cache_enabled", False):
         return await _finish_with("ℹ️ 缓存功能未启用（draw_cache_enabled=False），无需清理")
     deleted, remaining = cleanup_cache()
     return await _finish_with(f"🧹 清理完成：删除 {deleted} 个，剩余 {remaining} 个")

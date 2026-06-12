@@ -1,19 +1,15 @@
 """API 响应模型"""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ImageData(BaseModel):
-    """图片数据"""
-
     b64_json: str | None = None
     url: str | None = None
     revised_prompt: str | None = None
 
 
 class Usage(BaseModel):
-    """Token 使用量"""
-
     input_tokens: int | None = None
     input_tokens_details: dict | None = None
     output_tokens: int | None = None
@@ -22,7 +18,7 @@ class Usage(BaseModel):
 
 
 class ImageResponse(BaseModel):
-    """OpenAI 绘图 API 响应"""
+    model_config = ConfigDict(extra="allow")
 
     created: int | None = None
     data: list[ImageData] = Field(default_factory=list)
@@ -33,5 +29,3 @@ class ImageResponse(BaseModel):
     model: str | None = None
     usage: Usage | None = None
     error: dict | None = None
-
-    model_config = {"extra": "allow"}

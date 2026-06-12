@@ -1,6 +1,6 @@
 """nonebot_plugin_easy_aidraw - AI绘图插件"""
 
-__version__ = "0.1.0"
+__version__ = "0.2.1"
 
 from nonebot import require
 from nonebot.plugin import PluginMetadata, inherit_supported_adapters
@@ -27,4 +27,4 @@ __plugin_meta__ = PluginMetadata(
     extra={"version": __version__, "author": "Agnes4m"},
 )
 
-__all__ = ["EnvConfig", "__plugin_meta__", "draw_command", "clear_cache_command"]
+__all__ = ["EnvConfig", "__plugin_meta__", "clear_cache_command", "draw_command"]
